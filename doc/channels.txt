@@ -1,0 +1,272 @@
+PD16A [see .drawio for definitive assignments]
+  SPI1
+  SPI2
+  SPI3
+  SPI4
+  AVI1
+  AVI2
+  AVI3
+  AVI4
+  HCO25-1
+  HCO25-2
+  HCO25-3
+  HCO25-4
+  HCO8-1
+  HCO8-2
+  HCO8-3
+  HCO8-4
+  HCO8-5  
+  HCO8-6
+  HCO8-7
+  HCO8-8
+  HCO8-9
+  HCO8-10  
+  HBO1
+  HBO2
+PD16B [see .drawio for definitive assignments]
+  SPI1
+  SPI2
+  SPI3
+  SPI4
+  AVI1
+  AVI2
+  AVI3
+  AVI4
+  HCO25-1
+  HCO25-2
+  HCO25-3
+  HCO25-4
+  HCO8-1
+  HCO8-2
+  HCO8-3
+  HCO8-4
+  HCO8-5
+  HCO8-6
+  HCO8-7
+  HCO8-8
+  HCO8-9
+  HCO8-10
+  HBO1
+  HBO2
+PD16C [see .drawio for definitive assignments]
+  SPI1
+  SPI2
+  SPI3
+  SPI4
+  AVI1
+  AVI2
+  AVI3
+  AVI4
+  HCO25-1
+  HCO25-2
+  HCO25-3
+  HCO25-4
+  HCO8-1
+  HCO8-2
+  HCO8-3
+  HCO8-4
+  HCO8-5
+  HCO8-6
+  HCO8-7
+  HCO8-8
+  HCO8-9
+  HCO8-10
+  HBO1
+  HBO2
+PD16D [see .drawio for definitive assignments]
+  SPI1
+  SPI2
+  SPI3
+  SPI4
+  AVI1
+  AVI2
+  AVI3
+  AVI4
+  HCO25-1
+  HCO25-2
+  HCO25-3
+  HCO25-4
+  HCO8-1
+  HCO8-2
+  HCO8-3
+  HCO8-4
+  HCO8-5
+  HCO8-6
+  HCO8-7
+  HCO8-8
+  HCO8-9
+  HCO8-10
+  HBO1
+  HBO2
+IOA [see .drawio for definitive assignments]
+  AVI1 
+  AVI2
+  AVI3
+  AVI4 
+  DPI1 
+  DPI2 
+  DPI3
+  DPI4
+  DPO1 
+  DPO2
+  DPO3
+  DPO4
+IOB [see .drawio for definitive assignments]
+  AVI1
+  AVI2
+  AVI3 
+  AVI4 
+  DPI1 
+  DPI2 
+  DPI3
+  DPI4 
+  DPO1 
+  DPO2 
+  DPO3 
+  DPO4 
+DISP [see .drawio for definitive assignments]
+  AVI1 - CRUISE CONTROLS: REST/ENA/DIS/SET-/RES+/CANCEL 
+  AVI2 - TRACTION CONTROL ON/OFF
+  AVI3 
+  AVI4 - FUEL LEVEL
+  AVI5 - FR BRAKE PRESSURE
+  AVI6 - RE BRAKE PRESSURE
+  AVI7 - SQUIRTER TAP
+  AVI8 - VAC RESERVOIR SWITCH
+  AVI9 - FR LINE LOCK TAP
+  DPI1 - BRAKE FLUID LEVEL SWITCH
+  DPI2 - EXHAUST BRAKE SWITCH (KILL SWITCH or CRUISE ON/OFF)
+  DPI3 
+  DPI4 - (UNAVAILABLE)
+  DPO1 - TRACTION CONTROL INDICATOR (IN DISPLAY POSSIBLE?)
+  DPO2 - CRUISE ENABLED INDICATOR (IN DISPLAY POSSIBLE?)
+  DPO3 - CRUISE ON/OFF INDICATOR (IN DISPLAY POSSIBLE?)
+  DPO4 
+R5 [see .drawio for definitive assignments]
+  AVI1  - MAP
+  AVI2  - IAT
+  AVI3  - COOLANT TEMP (ECT)
+  AVI4  - TRANS LINE PRESSURE
+  AVI5  - TRANS TEMP (TFT)
+  AVI6  - FUEL PRESSURE
+  AVI7  - OIL PRESSURE
+  AVI8  - TPS A
+  AVI9  - TPS B
+  AVI10 - PEDAL A (APP)
+  AVI11 - PEDAL B (APP)
+  AVI12 - OIL LEVEL (R5,PD16: SPI/AVI ONLY, IOE: AVI ONLY) 
+  AVI13 - BRAKE PEDAL SWITCH
+  AVI14 
+  AVI15 - AC PRESSURE
+  AVI16 - AC TEMPERATURE
+  AVI17 - FR BLOWER SPEED SELECTOR
+  AVI18 - RE BLOWER SPEED SELECTOR
+  AVI19 - WIPER ROTARY: INT/LOW/HI
+  AVI20 - TURN-SIGNAL ROTARY: OFF/L/R/HAZ
+  AVI21 - LIGHTS ROTARY: OFF/PARK/LOW/HI
+  AVI22 - PN-R-KEYIN ROTARY: UNKNOWN/PN/REV/KEYIN/KEYIN-PN/KEYIN-REV
+  AVI23 - IGNITION ROTARY: OFF/ACC/IG1/IG2/STA
+  SPI1/AVI  - ISS+
+  SPI2/AVI  - VSS+
+  SPI3/AVI  - TRANS TFP A
+  SPI4/AVI  - TRANS TFP B
+  SPI5/AVI  - TRANS TFP C
+  SPI6/AVI
+  SPI7/AVI
+  SPI8/AVI
+  SPI9/AVI
+  SPI10/AVI - FLEX FUEL COMP/TEMP
+  HCO25-1 - FUEL PUMP
+  HCO25-2
+  HCO25-3 - CLT RADIATOR FAN A
+  HCO25-4 - CLT RADIATOR FAN B
+  HCO8-1  - CAN1+/CRANK+/CAM+/ALT-ONEWIRE-PU+
+  HCO8-2  - TRANS+ (FOR SOLENOIDS)
+  HCO8-3  - AC CLUTCH
+  HCO8-4  - STARTER 
+  HCO8-5
+  HCO8-6  - HEADLIGHT HIGHBEAM
+  HCO8-7  - HEADLIGHT LOWBEAM
+  HCO8-8  - MARKER LIGHT
+  HCO8-9  - REVERSE LIGHT
+  HCO8-10 - BRAKE LIGHT
+  HCO8-11 - L-TURN LIGHT
+  HCO8-12 - R-TURN LIGHT
+  INJ9  - ALTERNATOR FIELD CONTROL
+  INJ10 - ACC+ DOMAIN RELAY (PARK+/LIC+/FOG+/ACC24+/ILLUM+)
+  INJ11 - IG1+ DOMAIN RELAY
+  INJ12 - IG2+ DOMAIN RELAY
+  INJ13 
+  INJ14 - AC REQUEST
+  INJ15 - ILLUM LOWSIDE
+  INJ16 - UP PADDLE
+  INJ17 - DOWN PADDLE
+  INJ18 - ECR RELAY (OPTIONAL BODY+ HOLD)
+  IGN9  - TCC SOLENOID
+  IGN10 - 1-2 SOLENOID (A)
+  IGN11 - 2-3 SOLENOID (B)
+  IGN12 - WIPER PARK
+  DPO1 - WIPER MOTOR (TO 24V MOTOR DRIVER)
+  DPO2 - FR BLOWER (TO 24V MOTOR DRIVER)
+  DPO3 - RE BLOWER (TO 24V MOTOR DRIVER)
+  DPO4
+  DPO5
+  DPO6
+  DPO7 - OIL RADIATOR FAN (TO MOTOR DRIVER)
+  DPO8 - TRANS RADIATOR FAN (TO MOTOR DRIVER)
+  HBO1 - DBW MOTOR A
+  HBO2 - DBW MOTOR B
+  HBO3
+  HBO4 - PC SOLENOID (615Hz 4A)
+
+Note:
+  BE ABLE TO HOOKUP ECU/DASH AND ONLY USE THAT TO START/RUN ENGINE ... no
+  custom modules external of that (yet)this way, we know that if
+  everything else fails that at least the ecu can get us home.
+
+  This is called STAGE0 in the drawio notes.
+  Get to this point before getting fancy.
+
+  While setting up channels, have generic outputs be driven via rotary
+  inputs .. so we can watch it in the CAN stream for easy future listeners
+  (see 0x6F7/3E7/3E8/3E9) (FIRST 10 SENSORS / FIRST 20 OUTPUTS)
+
+
+SPI:
+  1k pullup to ? (prob +5)
+  0->5 analog in
+  22.5KHz max f
+  -10/+10 with 25v max input v
+
+AVI:
+  1k p/u to 5v
+  -10/+30 with 30v max input v
+
+HCO8:
+  high-side -> batt v
+  100Hz 0->100% duty
+  flyback protected
+
+HCO25:
+  high or low-side
+  1KHz 0->100% duty
+
+INJ:
+  DPO alternative 2A low-side
+  0-12v sw input
+
+DPO:
+  3A low-side, 10KHz
+  flyback protected
+  4.7k to 5 or 12 (or none)
+  0-12v sw input
+
+HBO:
+  8A HS-LS, 18KHz
+
+IGN:
+  3A LS, flyback protected
+  GLOBAL 5v or 12v pullup rail
+  270ohm pullup per chan
+  DPO alternative 3A low-side
+  0-12v sw input

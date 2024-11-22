@@ -1,0 +1,119 @@
+<!DOCTYPE CrossStudio_Project_File>
+<solution Name="bridge" version="2" target="8">
+  <configuration
+    Name="Common"
+    arm_target_connect_with_reset="Yes"
+    arm_target_interface_type="SWD"
+    build_intermediate_directory="$(ProjectDir)/$(Configuration)/obj"
+    build_output_directory="$(Configuration)"
+    build_output_file_name="$(OutDir)/$(ProjectName)-$(Configuration)$(EXE)"
+    build_treat_warnings_as_errors="Yes" />
+  <configuration Name="dbg" inherited_configurations="Debug" />
+  <configuration
+    Name="Debug"
+    c_preprocessor_definitions="DEBUG"
+    debug_startup_completion_point="main"
+    debug_threads_max="50"
+    gcc_debugging_level="Level 3"
+    gcc_optimization_level="Debug"
+    hidden="Yes" />
+  <configuration Name="rel" inherited_configurations="Release" />
+  <configuration
+    Name="Release"
+    c_preprocessor_definitions="NDEBUG"
+    gcc_debugging_level="None"
+    gcc_omit_frame_pointer="Yes"
+    gcc_optimization_level="Level 3"
+    hidden="Yes" />
+  <project Name="bridge">
+    <configuration
+      CMSIS_CORE="Yes"
+      Name="Common"
+      Placement="Flash"
+      Target="STM32G474CE"
+      arm_architecture="v7EM"
+      arm_core_type="Cortex-M4"
+      arm_fp_abi="Hard"
+      arm_fpu_type="FPv4-SP-D16"
+      arm_linker_heap_size="0"
+      arm_linker_process_stack_size="512"
+      arm_linker_stack_size="512"
+      arm_simulator_memory_simulation_filename="$(ProjectDir)/sys/STM32SimulatorMemory.dll_x64"
+      arm_simulator_memory_simulation_parameter="STM32G474CE;0x80000;0x20000"
+      arm_target_loader_applicable_loaders="Flash"
+      arm_target_loader_default_loader="Flash"
+      arm_target_trace_interface_type="SWO"
+      c_preprocessor_definitions="STM32G474xx;__VECTORS=&quot;STM32G474xx.vec&quot;;__SYSTEM_STM32G4XX;__TARGET_PROCESSOR_STM32G474CE;__THUMB;USE_FULL_LL_DRIVER"
+      c_user_include_directories="$(ProjectDir)/inc;$(ProjectDir)/stm32g4xx_hal_driver-1.2.3/Inc"
+      compilation_database_file="$(IntDir)/$(ProjectName).json"
+      debug_entry_point_symbol="reset_handler"
+      debug_register_definition_file="$(ProjectDir)/sys/STM32G474_Peripherals.xml"
+      debug_threads_script="$(PackagesDir)/libraries/libctl/source/threads.js"
+      gcc_c_language_standard="gnu17"
+      gcc_sign_compare_warning="Yes"
+      gcc_strict_prototypes_warning="Yes"
+      gcc_uninitialized_variables_warning="Yes"
+      gcc_unused_variable_warning="Yes"
+      libctl="Yes"
+      linker_memory_map_file="$(ProjectDir)/sys/STM32G474CE_MemoryMap.xml"
+      linker_printf_fmt_level="int"
+      linker_printf_fp_enabled="No"
+      linker_printf_width_precision_supported="No"
+      linker_scanf_character_group_matching_enabled="No"
+      linker_scanf_fmt_level="int"
+      linker_scanf_fp_enabled="No"
+      linker_section_placement_file="$(ProjectDir)/sys/flash_placement.xml"
+      macros="DeviceVectorsFile=STM32G474xx.vec;Family=STM32;Target=STM32G474CE;Placement=Flash"
+      project_type="Executable"
+      target_get_partname_script="GetPartName()"
+      target_match_partname_script="MatchPartName(&quot;$(Target)&quot;)"
+      target_script_file="$(ProjectDir)/sys/STM32_Target.js"
+      target_trace_initialize_script="EnableTrace(&quot;$(TraceInterfaceType)&quot;)" />
+    <configuration
+      Name="Flash"
+      arm_target_flash_loader_file_path="$(LOADER:$(TargetsDir)/STM32/Release/STM32G4_Loader_rpc.elf)"
+      arm_target_loader_can_erase_all="Yes"
+      arm_target_loader_can_lock_all="No"
+      arm_target_loader_can_lock_range="No"
+      arm_target_loader_can_unlock_all="No"
+      arm_target_loader_can_unlock_range="No"
+      target_reset_script="FLASHReset()" />
+    <configuration Name="RAM" target_reset_script="Reset()" />
+    <folder Name="doc">
+      <file file_name="doc/channels.txt" />
+    </folder>
+    <folder Name="inc">
+      <file file_name="inc/main.h" />
+    </folder>
+    <folder Name="src">
+      <file file_name="src/can.c" />
+      <file file_name="src/main.c" />
+    </folder>
+    <folder Name="stm32g4xx_hal_driver-1.2.3">
+      <folder Name="Inc">
+        <file file_name="stm32g4xx_hal_driver-1.2.3/Inc/stm32g4xx_ll_bus.h" />
+        <file file_name="stm32g4xx_hal_driver-1.2.3/Inc/stm32g4xx_ll_exti.h" />
+        <file file_name="stm32g4xx_hal_driver-1.2.3/Inc/stm32g4xx_ll_gpio.h" />
+        <file file_name="stm32g4xx_hal_driver-1.2.3/Inc/stm32g4xx_ll_pwr.h" />
+        <file file_name="stm32g4xx_hal_driver-1.2.3/Inc/stm32g4xx_ll_rcc.h" />
+        <file file_name="stm32g4xx_hal_driver-1.2.3/Inc/stm32g4xx_ll_system.h" />
+        <file file_name="stm32g4xx_hal_driver-1.2.3/Inc/stm32g4xx_ll_utils.h" />
+      </folder>
+      <folder Name="Src">
+        <file file_name="stm32g4xx_hal_driver-1.2.3/Src/stm32g4xx_ll_exti.c" />
+        <file file_name="stm32g4xx_hal_driver-1.2.3/Src/stm32g4xx_ll_gpio.c" />
+        <file file_name="stm32g4xx_hal_driver-1.2.3/Src/stm32g4xx_ll_rcc.c" />
+      </folder>
+    </folder>
+    <folder Name="sys">
+      <file file_name="sys/STM32_Startup.s">
+        <configuration
+          Name="Common"
+          c_preprocessor_definitions="STARTUP_FROM_RESET" />
+      </file>
+      <file file_name="sys/STM32G474xx.vec" />
+      <file file_name="sys/system_stm32g4xx.c" />
+      <file file_name="sys/thumb_crt0.s" />
+    </folder>
+  </project>
+</solution>
