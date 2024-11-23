@@ -595,7 +595,7 @@ static void
       decode_700(pframe);
       break;
     default:
-      ctl_events_set_clear(&e, EVT_ERR_UNKNOWN_ECUFRAME, EVT_NONE);
+      ctl_events_set_clear(&e_err, EVT_ERR_UNKNOWN_ECUFRAME, EVT_NONE);
   }
 }
 
@@ -776,7 +776,7 @@ __NO_RETURN int
   { /* LED control */
     static CTL_TASK_t task;
     static unsigned stack[CTL_CPU_STATE_WORD_SIZE+4];
-    ctl_task_run(&task, TASKPRI_LEDCHIRP, &task_led_chirp, (void*)100, "led_chirp", sizeof(stack)/sizeof(unsigned), stack, 0);
+    ctl_task_run(&task, TASKPRI_LOWEST, &task_led_chirp, (void*)100, "led_chirp", sizeof(stack)/sizeof(unsigned), stack, 0);
   }
   { /* IOE status generation */
     static CTL_TASK_t task;
@@ -887,8 +887,10 @@ static __NO_RETURN void
 {
   (void)arg;
   while(~0) {
-    if(ctl_events_wait_uc(CTL_EVENT_WAIT_ANY_EVENTS, &e, EVT_BOOT0_EDGE_BUTDOWN | EVT_BOOT0_EDGE_BUTUP |
-                                                         EVT_USER_EDGE_BUTDOWN  | EVT_USER_EDGE_BUTUP ))
+    unsigned const evt = ctl_events_wait_uc(
+      CTL_EVENT_WAIT_ANY_EVENTS, &e, EVT_BOOT0_BUTDOWN | EVT_BOOT0_BUTUP |
+                                     EVT_USER_BUTDOWN  | EVT_USER_BUTUP );
+    if(evt)
       led_chirp();
   }
 }

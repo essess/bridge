@@ -15,7 +15,6 @@ extern "C"
 
 enum _taskpri_t {                /*!  global task priorities                      */
   TASKPRI_HIGHEST  = 255,        /**< reserved for main() during startup          */
-  TASKPRI_LEDCHIRP = 254,
   /* ... */
   TASKPRI_PD16OUT = 129,
   TASKPRI_IOEOUT  = 128,
