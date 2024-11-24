@@ -38,6 +38,7 @@
  * @brief constants
  */
 typedef enum _known_haltech_rxids_t {
+  HTID_ECU_6F7   = 0x6F7,   /**< GenOut1<->20                  - 10Hz */
 
   HTID_PD16A_6D0 = 0x6D0,   /**< HCO25/HCO8/HBO command        - 20Hz max, 333Hz min */
   HTID_PD16A_6D1 = 0x6D1,   /**< HCO25/HCO8/HBO/SPI/AVI config - 2Hz max,  50Hz min  */
@@ -58,7 +59,6 @@ typedef enum _known_haltech_rxids_t {
   HTID_PD16R5_700 = 0x700,  /**< same as "HCO25/HCO8/HBO command" but wrt internal R5 PD16 */
 
 } known_haltech_rxids_t;
-
 
 typedef enum _evt_t { /*! event set e, e_err, e_ioa, ... (uint32_t) */
 
@@ -120,6 +120,7 @@ typedef enum _evt_t { /*! event set e, e_err, e_ioa, ... (uint32_t) */
   /*> END   e_pd16 <*/
 
   /*> BEGIN e_err <*/
+  EVT_ERR_GENOUT_LOCK_FAIL   = (1<<2),
   EVT_ERR_UNKNOWN_ECUFRAME   = (1<<1),
   EVT_ERR_UNHANDLED_ECUFRAME = (1<<0),
   /*> END   e_err <*/
@@ -133,6 +134,39 @@ typedef enum _evt_t { /*! event set e, e_err, e_ioa, ... (uint32_t) */
   EVT_PD16_ERR_SENDSTATUS  = (1<<1),
   EVT_PD16_ERR_ALLOCSTATUS = (1<<0),
   /*> END   e_pd16_err <*/
+
+  /*> BEGIN e_ecu_upd0 <*/
+  ECT_ECU_GENSENS10 = (1<<29),
+  ECT_ECU_GENSENS9  = (1<<28),
+  ECT_ECU_GENSENS8  = (1<<27),
+  ECT_ECU_GENSENS7  = (1<<26),
+  ECT_ECU_GENSENS6  = (1<<25),
+  ECT_ECU_GENSENS5  = (1<<24),
+  ECT_ECU_GENSENS4  = (1<<23),
+  ECT_ECU_GENSENS3  = (1<<22),
+  ECT_ECU_GENSENS2  = (1<<21),
+  ECT_ECU_GENSENS1  = (1<<20),
+  EVT_ECU_GENOUT20  = (1<<19),
+  EVT_ECU_GENOUT19  = (1<<18),
+  EVT_ECU_GENOUT18  = (1<<17),
+  EVT_ECU_GENOUT17  = (1<<16),
+  EVT_ECU_GENOUT16  = (1<<15),
+  EVT_ECU_GENOUT15  = (1<<14),
+  EVT_ECU_GENOUT14  = (1<<13),
+  EVT_ECU_GENOUT13  = (1<<12),
+  EVT_ECU_GENOUT12  = (1<<11),
+  EVT_ECU_GENOUT11  = (1<<10),
+  EVT_ECU_GENOUT10  = (1<<9),
+  EVT_ECU_GENOUT9   = (1<<8),
+  EVT_ECU_GENOUT8   = (1<<7),
+  EVT_ECU_GENOUT7   = (1<<6),
+  EVT_ECU_GENOUT6   = (1<<5),
+  EVT_ECU_GENOUT5   = (1<<4),
+  EVT_ECU_GENOUT4   = (1<<3),
+  EVT_ECU_GENOUT3   = (1<<2),
+  EVT_ECU_GENOUT2   = (1<<1),
+  EVT_ECU_GENOUT1   = (1<<0),
+  /*> END   e_ecu_upd0 <*/
 
   EVT_NONE = 0<<0
 } evt_t;
@@ -150,7 +184,7 @@ static CTL_EVENT_SET_t e_pd16a, e_pd16a_err,            /*< PD16 events      */
                        e_pd16b, e_pd16b_err,
                        e_pd16c, e_pd16c_err,
                        e_pd16d, e_pd16d_err;
-
+static CTL_EVENT_SET_t e_ecu_upd0;                      /*< ECU events       */
 
 
 static __NO_RETURN void task_test(void *);
@@ -185,8 +219,6 @@ static __NO_RETURN void task_pd16d_avispi_out(void *);
 static __NO_RETURN void task_pd16d_hco8hco25hbo_out(void *);
 static __NO_RETURN void task_pd16d_diag_out(void *);
 
-
-
 typedef struct _debounce_info_t { /*! use with task_but_debounce() */
   CTL_TIME_t to;
   CTL_EVENT_SET_t *pe;
@@ -205,6 +237,35 @@ CTL_MESSAGE_QUEUE_t txq;
 #define TXQ_COUNT (64)
 void *txq_mem[TXQ_COUNT];
 
+typedef union _genout_t { /*! GenOut1 through GenOut20 state */
+  struct {                /*   COMPILER DEPENDENT ORDERING   */
+    uint32_t     :8;
+    uint32_t _17 :1;
+    uint32_t _18 :1;
+    uint32_t _19 :1;
+    uint32_t _20 :1;
+    uint8_t      :4;
+    uint32_t _9  :1;
+    uint32_t _10 :1;
+    uint32_t _11 :1;
+    uint32_t _12 :1;
+    uint32_t _13 :1;
+    uint32_t _14 :1;
+    uint32_t _15 :1;
+    uint32_t _16 :1;
+    uint32_t _1  :1;
+    uint32_t _2  :1;
+    uint32_t _3  :1;
+    uint32_t _4  :1;
+    uint32_t _5  :1;
+    uint32_t _6  :1;
+    uint32_t _7  :1;
+    uint32_t _8  :1;
+  } bit;
+  uint32_t as_uint32;
+} genout_t;
+static genout_t genout;
+static CTL_MUTEX_t mtx_genout; /**< R-M-W, otherwise read .as_uint32 is atomic */
 
 /** ---------------------------------------------------------------------------
  * @internal
@@ -511,6 +572,51 @@ int
 
 /** -------------------------------------------------------------------------
  * @internal
+ * @brief grab bit states for GenOut1 through GenOut20 from ecu,
+ *        ignore rest until desired in the future
+ *
+ */
+static void
+  decode_6F7(canframe_t * const pframe)
+{
+  assert(pframe);
+  assert(!pframe->extended);
+  assert(pframe->id = 0x6F7);
+
+  enum { BASE_MS = 100 };   /**< 10Hz base emit rate */
+  genout_t const update = { .as_uint32 = pframe->data.as_uint32[0] };
+
+  if(ctl_mutex_lock(&mtx_genout, CTL_TIMEOUT_DELAY, BASE_MS/2)) {
+    CTL_EVENT_SET_t pulse = EVT_NONE; /**< foreach updated bit, pulse associated event */
+    pulse |= (update.bit._1  != genout.bit._1 )?EVT_ECU_GENOUT1: EVT_NONE;
+    pulse |= (update.bit._2  != genout.bit._2 )?EVT_ECU_GENOUT2: EVT_NONE;
+    pulse |= (update.bit._3  != genout.bit._3 )?EVT_ECU_GENOUT3: EVT_NONE;
+    pulse |= (update.bit._4  != genout.bit._4 )?EVT_ECU_GENOUT4: EVT_NONE;
+    pulse |= (update.bit._5  != genout.bit._5 )?EVT_ECU_GENOUT5: EVT_NONE;
+    pulse |= (update.bit._6  != genout.bit._6 )?EVT_ECU_GENOUT6: EVT_NONE;
+    pulse |= (update.bit._7  != genout.bit._7 )?EVT_ECU_GENOUT7: EVT_NONE;
+    pulse |= (update.bit._8  != genout.bit._8 )?EVT_ECU_GENOUT8: EVT_NONE;
+    pulse |= (update.bit._9  != genout.bit._9 )?EVT_ECU_GENOUT9: EVT_NONE;
+    pulse |= (update.bit._10 != genout.bit._10)?EVT_ECU_GENOUT10:EVT_NONE;
+    pulse |= (update.bit._11 != genout.bit._11)?EVT_ECU_GENOUT11:EVT_NONE;
+    pulse |= (update.bit._12 != genout.bit._12)?EVT_ECU_GENOUT12:EVT_NONE;
+    pulse |= (update.bit._13 != genout.bit._13)?EVT_ECU_GENOUT13:EVT_NONE;
+    pulse |= (update.bit._14 != genout.bit._14)?EVT_ECU_GENOUT14:EVT_NONE;
+    pulse |= (update.bit._15 != genout.bit._15)?EVT_ECU_GENOUT15:EVT_NONE;
+    pulse |= (update.bit._16 != genout.bit._16)?EVT_ECU_GENOUT16:EVT_NONE;
+    pulse |= (update.bit._17 != genout.bit._17)?EVT_ECU_GENOUT17:EVT_NONE;
+    pulse |= (update.bit._18 != genout.bit._18)?EVT_ECU_GENOUT18:EVT_NONE;
+    pulse |= (update.bit._19 != genout.bit._19)?EVT_ECU_GENOUT19:EVT_NONE;
+    pulse |= (update.bit._20 != genout.bit._20)?EVT_ECU_GENOUT20:EVT_NONE;
+    genout.as_uint32 = update.as_uint32;  /**< update internal state */
+    ctl_events_pulse(&e_ecu_upd0, pulse);
+    ctl_mutex_unlock(&mtx_genout);
+  } else { ctl_events_set_clear(&e_err, EVT_ERR_GENOUT_LOCK_FAIL, EVT_NONE); }
+
+}
+
+/** -------------------------------------------------------------------------
+ * @internal
  * @brief decode the internal R5 PD16 data frame(s)
  *        (same as the BASE+0 frame of PD16A/B/C/D)
  *
@@ -591,6 +697,9 @@ static void
   assert(pframe);
   assert(!pframe->extended);
   switch(pframe->id) {
+    case HTID_ECU_6F7:
+      decode_6F7(pframe);
+      break;
     case HTID_PD16R5_700:
       decode_700(pframe);
       break;
@@ -743,6 +852,10 @@ __NO_RETURN int
   ctl_events_init(&e_pd16b, EVT_NONE); ctl_events_init(&e_pd16b_err, EVT_NONE);
   ctl_events_init(&e_pd16c, EVT_NONE); ctl_events_init(&e_pd16c_err, EVT_NONE);
   ctl_events_init(&e_pd16d, EVT_NONE); ctl_events_init(&e_pd16d_err, EVT_NONE);
+                                       ctl_events_init(&e_ecu_upd0,  EVT_NONE);
+
+  genout.as_uint32 = 0;
+  ctl_mutex_init(&mtx_genout);
 
   ctl_memory_area_init(&frames, frame_mem, FRAME_WORDSIZE, FRAME_COUNT);
   ctl_message_queue_init(&txq, txq_mem, TXQ_COUNT);
@@ -783,32 +896,32 @@ __NO_RETURN int
     static unsigned stack[CTL_CPU_STATE_WORD_SIZE+4];
     ctl_task_run(&task, TASKPRI_STATUS, &task_ioe_status_out, 0, "ioe_status_out", sizeof(stack)/sizeof(unsigned), stack, 0);
   }
-  { /*  IOE-A AVI1/2/3/4 message out */
+  { /* IOE-A AVI1/2/3/4 message out */
     static CTL_TASK_t task;
     static unsigned stack[CTL_CPU_STATE_WORD_SIZE+32];
     ctl_task_run(&task, TASKPRI_IOEOUT, &task_ioa_avi14_out, 0, "ioa_avi14_out", sizeof(stack)/sizeof(unsigned), stack, 0);
   }
-  { /*  IOE-A DPI1/2 message out */
+  { /* IOE-A DPI1/2 message out */
     static CTL_TASK_t task;
     static unsigned stack[CTL_CPU_STATE_WORD_SIZE+32];
     ctl_task_run(&task, TASKPRI_IOEOUT, &task_ioa_dpi12_out, 0, "ioa_dpi12_out", sizeof(stack)/sizeof(unsigned), stack, 0);
   }
-  { /*  IOE-A DPI3/4 message out */
+  { /* IOE-A DPI3/4 message out */
     static CTL_TASK_t task;
     static unsigned stack[CTL_CPU_STATE_WORD_SIZE+32];
     ctl_task_run(&task, TASKPRI_IOEOUT, &task_ioa_dpi34_out, 0, "ioa_dpi34_out", sizeof(stack)/sizeof(unsigned), stack, 0);
   }
-  { /*  IOE-B AVI1/2/3/4 message out */
+  { /* IOE-B AVI1/2/3/4 message out */
     static CTL_TASK_t task;
     static unsigned stack[CTL_CPU_STATE_WORD_SIZE+32];
     ctl_task_run(&task, TASKPRI_IOEOUT, &task_iob_avi14_out, 0, "iob_avi14_out", sizeof(stack)/sizeof(unsigned), stack, 0);
   }
-  { /*  IOE-B DPI1/2 message out */
+  { /* IOE-B DPI1/2 message out */
     static CTL_TASK_t task;
     static unsigned stack[CTL_CPU_STATE_WORD_SIZE+32];
     ctl_task_run(&task, TASKPRI_IOEOUT, &task_iob_dpi12_out, 0, "iob_dpi12_out", sizeof(stack)/sizeof(unsigned), stack, 0);
   }
-  { /*  IOE-B DPI3/4 message out */
+  { /* IOE-B DPI3/4 message out */
     static CTL_TASK_t task;
     static unsigned stack[CTL_CPU_STATE_WORD_SIZE+32];
     ctl_task_run(&task, TASKPRI_IOEOUT, &task_iob_dpi34_out, 0, "iob_dpi34_out", sizeof(stack)/sizeof(unsigned), stack, 0);
@@ -818,17 +931,17 @@ __NO_RETURN int
     static unsigned stack[CTL_CPU_STATE_WORD_SIZE+4];
     ctl_task_run(&task, TASKPRI_STATUS, &task_pd16_status_out, 0, "pd16_status_out", sizeof(stack)/sizeof(unsigned), stack, 0);
   }
-  { /*  PD16A AVI1/2/3/4-SPI1/2/3/4 out */
+  { /* PD16A AVI1/2/3/4-SPI1/2/3/4 out */
     static CTL_TASK_t task;
     static unsigned stack[CTL_CPU_STATE_WORD_SIZE+32];
     ctl_task_run(&task, TASKPRI_PD16OUT, &task_pd16a_avispi_out, 0, "pd16a_avispi_out", sizeof(stack)/sizeof(unsigned), stack, 0);
   }
-  { /*  PD16A HCO25/HCO8/HBO out */
+  { /* PD16A HCO25/HCO8/HBO out */
     static CTL_TASK_t task;
     static unsigned stack[CTL_CPU_STATE_WORD_SIZE+32];
     ctl_task_run(&task, TASKPRI_PD16OUT, &task_pd16a_hco8hco25hbo_out, 0, "pd16a_hco8hco25hbo_out", sizeof(stack)/sizeof(unsigned), stack, 0);
   }
-  { /*  PD16A DIAG out */
+  { /* PD16A DIAG out */
     static CTL_TASK_t task;
     static unsigned stack[CTL_CPU_STATE_WORD_SIZE+32];
     ctl_task_run(&task, TASKPRI_PD16OUT, &task_pd16a_diag_out, 0, "pd16a_diag_out", sizeof(stack)/sizeof(unsigned), stack, 0);
@@ -836,7 +949,7 @@ __NO_RETURN int
 
 
 
-  { /*  test of some button events */
+  { /* for testing whatever you want */
     static CTL_TASK_t task;
     static unsigned stack[CTL_CPU_STATE_WORD_SIZE+32];
     ctl_task_run(&task, TASKPRI_LOWEST, &task_test, 0, "task_test", sizeof(stack)/sizeof(unsigned), stack, 0);
@@ -872,7 +985,7 @@ __NO_RETURN int
       }
     }
 
-    sv = lookup((ctl_get_current_time()/10)%1000); /* 1/10 Hz */
+    sv = lookup((ctl_get_current_time()/4)%1000); /* 1/4 Hz */
     /*> TEMPORARY: final solution still TBD <*/
     __WFI();
   }
@@ -887,10 +1000,11 @@ static __NO_RETURN void
 {
   (void)arg;
   while(~0) {
-    unsigned const evt = ctl_events_wait_uc(
-      CTL_EVENT_WAIT_ANY_EVENTS, &e, EVT_BOOT0_BUTDOWN | EVT_BOOT0_BUTUP |
-                                     EVT_USER_BUTDOWN  | EVT_USER_BUTUP );
-    if(evt)
+    if(ctl_events_wait_uc(CTL_EVENT_WAIT_ANY_EVENTS, &e_ecu_upd0, EVT_ECU_GENOUT20 | EVT_ECU_GENOUT19 | EVT_ECU_GENOUT18 | EVT_ECU_GENOUT17 |
+                                                                  EVT_ECU_GENOUT16 | EVT_ECU_GENOUT15 | EVT_ECU_GENOUT14 | EVT_ECU_GENOUT13 |
+                                                                  EVT_ECU_GENOUT12 | EVT_ECU_GENOUT11 | EVT_ECU_GENOUT10 | EVT_ECU_GENOUT9  |
+                                                                  EVT_ECU_GENOUT8  | EVT_ECU_GENOUT7  | EVT_ECU_GENOUT6  | EVT_ECU_GENOUT5  |
+                                                                  EVT_ECU_GENOUT4  | EVT_ECU_GENOUT3  | EVT_ECU_GENOUT2  | EVT_ECU_GENOUT1 ))
       led_chirp();
   }
 }
@@ -908,8 +1022,8 @@ static __NO_RETURN void
   while(~0) {
     CTL_TIME_t const t = ctl_get_current_time();
     (evt == EVT_NONE)?led_off():led_on();
-    evt = ctl_events_wait(CTL_EVENT_WAIT_ANY_EVENTS, &e,
-                          EVT_LED_CHIRP, CTL_TIMEOUT_ABSOLUTE, t+to);
+    evt = ctl_events_wait(CTL_EVENT_WAIT_ANY_EVENTS, &e, EVT_LED_CHIRP,
+                          CTL_TIMEOUT_ABSOLUTE, t+to);
   }
 }
 
