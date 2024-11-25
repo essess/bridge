@@ -38,7 +38,10 @@
  * @brief constants
  */
 typedef enum _known_haltech_rxids_t {
-  HTID_ECU_6F7   = 0x6F7,   /**< GenOut1<->20                  - 10Hz */
+  HTID_ECU_3E7   = 0x3E7,   /**< GenSens1<->4 from ecu         - 20Hz */
+  HTID_ECU_3E8   = 0x3E8,   /**< GenSens5<->8 from ecu         - 20Hz */
+  HTID_ECU_3E9   = 0x3E9,   /**< GenSens9/10 from ecu          - 20Hz */
+  HTID_ECU_6F7   = 0x6F7,   /**< GenOut1<->20 from ecu         - 10Hz */
 
   HTID_PD16A_6D0 = 0x6D0,   /**< HCO25/HCO8/HBO command        - 20Hz max, 333Hz min */
   HTID_PD16A_6D1 = 0x6D1,   /**< HCO25/HCO8/HBO/SPI/AVI config - 2Hz max,  50Hz min  */
@@ -120,6 +123,7 @@ typedef enum _evt_t { /*! event set e, e_err, e_ioa, ... (uint32_t) */
   /*> END   e_pd16 <*/
 
   /*> BEGIN e_err <*/
+  EVT_ERR_GENSENS_LOCK_FAIL  = (1<<3),
   EVT_ERR_GENOUT_LOCK_FAIL   = (1<<2),
   EVT_ERR_UNKNOWN_ECUFRAME   = (1<<1),
   EVT_ERR_UNHANDLED_ECUFRAME = (1<<0),
@@ -136,16 +140,16 @@ typedef enum _evt_t { /*! event set e, e_err, e_ioa, ... (uint32_t) */
   /*> END   e_pd16_err <*/
 
   /*> BEGIN e_ecu_upd0 <*/
-  ECT_ECU_GENSENS10 = (1<<29),
-  ECT_ECU_GENSENS9  = (1<<28),
-  ECT_ECU_GENSENS8  = (1<<27),
-  ECT_ECU_GENSENS7  = (1<<26),
-  ECT_ECU_GENSENS6  = (1<<25),
-  ECT_ECU_GENSENS5  = (1<<24),
-  ECT_ECU_GENSENS4  = (1<<23),
-  ECT_ECU_GENSENS3  = (1<<22),
-  ECT_ECU_GENSENS2  = (1<<21),
-  ECT_ECU_GENSENS1  = (1<<20),
+  EVT_ECU_GENSENS10 = (1<<29),
+  EVT_ECU_GENSENS9  = (1<<28),
+  EVT_ECU_GENSENS8  = (1<<27),
+  EVT_ECU_GENSENS7  = (1<<26),
+  EVT_ECU_GENSENS6  = (1<<25),
+  EVT_ECU_GENSENS5  = (1<<24),
+  EVT_ECU_GENSENS4  = (1<<23),
+  EVT_ECU_GENSENS3  = (1<<22),
+  EVT_ECU_GENSENS2  = (1<<21),
+  EVT_ECU_GENSENS1  = (1<<20),
   EVT_ECU_GENOUT20  = (1<<19),
   EVT_ECU_GENOUT19  = (1<<18),
   EVT_ECU_GENOUT18  = (1<<17),
@@ -177,14 +181,14 @@ typedef enum _evt_t { /*! event set e, e_err, e_ioa, ... (uint32_t) */
  */
 can_t *fdcan2;
 
-static CTL_EVENT_SET_t e, e_err;                        /*< top-level events */
-static CTL_EVENT_SET_t e_ioa, e_ioa_err,                /*< IOE events       */
+static CTL_EVENT_SET_t e, e_err;                        /*< top-level events  */
+static CTL_EVENT_SET_t e_ioa, e_ioa_err,                /*< IOE events        */
                        e_iob, e_iob_err;
-static CTL_EVENT_SET_t e_pd16a, e_pd16a_err,            /*< PD16 events      */
+static CTL_EVENT_SET_t e_pd16a, e_pd16a_err,            /*< PD16 events       */
                        e_pd16b, e_pd16b_err,
                        e_pd16c, e_pd16c_err,
                        e_pd16d, e_pd16d_err;
-static CTL_EVENT_SET_t e_ecu_upd0;                      /*< ECU events       */
+static CTL_EVENT_SET_t e_ecu_upd0;                      /*< ECU update events */
 
 
 static __NO_RETURN void task_test(void *);
@@ -266,6 +270,26 @@ typedef union _genout_t { /*! GenOut1 through GenOut20 state */
 } genout_t;
 static genout_t genout;
 static CTL_MUTEX_t mtx_genout; /**< R-M-W, otherwise read .as_uint32 is atomic */
+
+typedef union _gensens_raw_t {
+    uint16_t raw;
+    uint8_t  as_unint8[2];  /**< endian swap helper */
+} gensens_raw_t;
+
+typedef struct _gensens_t { /*! GenSens1 through GenSens10 raw values     */
+  gensens_raw_t _1;         /*  consumer responsible for appropriate conv */
+  gensens_raw_t _2;
+  gensens_raw_t _3;
+  gensens_raw_t _4;
+  gensens_raw_t _5;
+  gensens_raw_t _6;
+  gensens_raw_t _7;
+  gensens_raw_t _8;
+  gensens_raw_t _9;
+  gensens_raw_t _10;
+} gensens_t;
+static gensens_t gensens;
+static CTL_MUTEX_t mtx_gensens;
 
 /** ---------------------------------------------------------------------------
  * @internal
@@ -572,6 +596,128 @@ int
 
 /** -------------------------------------------------------------------------
  * @internal
+ * @brief grab raw values for GenSens1 through GenSens4 from ecu
+ *
+ */
+static void
+  decode_3E7(canframe_t * const pframe)
+{
+  assert(pframe);
+  assert(!pframe->extended);
+  assert(pframe->id = 0x3E7);
+  assert(pframe->dlc >= 8);
+
+  enum { BASE_MS = 50 };   /**< 20Hz base emit rate */
+  if(ctl_mutex_lock(&mtx_gensens, CTL_TIMEOUT_DELAY, BASE_MS/2)) {
+    gensens_raw_t update;
+    CTL_EVENT_SET_t pulse = EVT_NONE; /**< foreach updated value, pulse associated event */
+
+    update.as_unint8[1] = pframe->data.as_uint8[0];   /**< GenSens1 */
+    update.as_unint8[0] = pframe->data.as_uint8[1];
+    pulse |= (update.raw != gensens._1.raw)?EVT_ECU_GENSENS1:EVT_NONE;
+    gensens._1.raw = update.raw;
+
+    update.as_unint8[1] = pframe->data.as_uint8[2];   /**< GenSens2 */
+    update.as_unint8[0] = pframe->data.as_uint8[3];
+    pulse |= (update.raw != gensens._2.raw)?EVT_ECU_GENSENS2:EVT_NONE;
+    gensens._2.raw = update.raw;
+
+    update.as_unint8[1] = pframe->data.as_uint8[4];   /**< GenSens3 */
+    update.as_unint8[0] = pframe->data.as_uint8[5];
+    pulse |= (update.raw != gensens._3.raw)?EVT_ECU_GENSENS3:EVT_NONE;
+    gensens._3.raw = update.raw;
+
+    update.as_unint8[1] = pframe->data.as_uint8[6];   /**< GenSens4 */
+    update.as_unint8[0] = pframe->data.as_uint8[7];
+    pulse |= (update.raw != gensens._4.raw)?EVT_ECU_GENSENS4:EVT_NONE;
+    gensens._4.raw = update.raw;
+
+    ctl_events_pulse(&e_ecu_upd0, pulse);
+    ctl_mutex_unlock(&mtx_gensens);
+  } else { ctl_events_set_clear(&e_err, EVT_ERR_GENSENS_LOCK_FAIL, EVT_NONE); }
+  
+}
+
+/** -------------------------------------------------------------------------
+ * @internal
+ * @brief grab raw values for GenSens5 through GenSens8 from ecu
+ *
+ */
+static void
+  decode_3E8(canframe_t * const pframe)
+{
+  assert(pframe);
+  assert(!pframe->extended);
+  assert(pframe->id = 0x3E8);
+  assert(pframe->dlc >= 8);
+
+  enum { BASE_MS = 50 };   /**< 20Hz base emit rate */
+  if(ctl_mutex_lock(&mtx_gensens, CTL_TIMEOUT_DELAY, BASE_MS/2)) {
+    gensens_raw_t update;
+    CTL_EVENT_SET_t pulse = EVT_NONE; /**< foreach updated value, pulse associated event */
+
+    update.as_unint8[1] = pframe->data.as_uint8[0];   /**< GenSens5 */
+    update.as_unint8[0] = pframe->data.as_uint8[1];
+    pulse |= (update.raw != gensens._5.raw)?EVT_ECU_GENSENS5:EVT_NONE;
+    gensens._5.raw = update.raw;
+
+    update.as_unint8[1] = pframe->data.as_uint8[2];   /**< GenSens6 */
+    update.as_unint8[0] = pframe->data.as_uint8[3];
+    pulse |= (update.raw != gensens._6.raw)?EVT_ECU_GENSENS6:EVT_NONE;
+    gensens._6.raw = update.raw;
+
+    update.as_unint8[1] = pframe->data.as_uint8[4];   /**< GenSens7 */
+    update.as_unint8[0] = pframe->data.as_uint8[5];
+    pulse |= (update.raw != gensens._7.raw)?EVT_ECU_GENSENS7:EVT_NONE;
+    gensens._7.raw = update.raw;
+
+    update.as_unint8[1] = pframe->data.as_uint8[6];   /**< GenSens8 */
+    update.as_unint8[0] = pframe->data.as_uint8[7];
+    pulse |= (update.raw != gensens._8.raw)?EVT_ECU_GENSENS8:EVT_NONE;
+    gensens._8.raw = update.raw;
+
+    ctl_events_pulse(&e_ecu_upd0, pulse);
+    ctl_mutex_unlock(&mtx_gensens);
+  } else { ctl_events_set_clear(&e_err, EVT_ERR_GENSENS_LOCK_FAIL, EVT_NONE); }
+
+}
+
+/** -------------------------------------------------------------------------
+ * @internal
+ * @brief grab raw values for GenSens9/10 from ecu,
+ *        ignore rest until desired in the future
+ *
+ */
+static void
+  decode_3E9(canframe_t * const pframe)
+{
+  assert(pframe);
+  assert(!pframe->extended);
+  assert(pframe->id = 0x3E9);
+  assert(pframe->dlc >= 4);
+
+  enum { BASE_MS = 50 };   /**< 20Hz base emit rate */
+  if(ctl_mutex_lock(&mtx_gensens, CTL_TIMEOUT_DELAY, BASE_MS/2)) {
+    gensens_raw_t update;
+    CTL_EVENT_SET_t pulse = EVT_NONE; /**< foreach updated value, pulse associated event */
+
+    update.as_unint8[1] = pframe->data.as_uint8[0];   /**< GenSens9 */
+    update.as_unint8[0] = pframe->data.as_uint8[1];
+    pulse |= (update.raw != gensens._9.raw)?EVT_ECU_GENSENS9:EVT_NONE;
+    gensens._9.raw = update.raw;
+
+    update.as_unint8[1] = pframe->data.as_uint8[2];   /**< GenSens10 */
+    update.as_unint8[0] = pframe->data.as_uint8[3];
+    pulse |= (update.raw != gensens._10.raw)?EVT_ECU_GENSENS10:EVT_NONE;
+    gensens._10.raw = update.raw;
+
+    ctl_events_pulse(&e_ecu_upd0, pulse);
+    ctl_mutex_unlock(&mtx_gensens);
+  } else { ctl_events_set_clear(&e_err, EVT_ERR_GENSENS_LOCK_FAIL, EVT_NONE); }
+}
+
+/** -------------------------------------------------------------------------
+ * @internal
  * @brief grab bit states for GenOut1 through GenOut20 from ecu,
  *        ignore rest until desired in the future
  *
@@ -582,6 +728,7 @@ static void
   assert(pframe);
   assert(!pframe->extended);
   assert(pframe->id = 0x6F7);
+  assert(pframe->dlc >= 4);
 
   enum { BASE_MS = 100 };   /**< 10Hz base emit rate */
   genout_t const update = { .as_uint32 = pframe->data.as_uint32[0] };
@@ -697,6 +844,15 @@ static void
   assert(pframe);
   assert(!pframe->extended);
   switch(pframe->id) {
+    case HTID_ECU_3E7:
+      decode_3E7(pframe);
+      break;
+    case HTID_ECU_3E8:
+      decode_3E8(pframe);
+      break;
+    case HTID_ECU_3E9:
+      decode_3E9(pframe);
+      break;
     case HTID_ECU_6F7:
       decode_6F7(pframe);
       break;
@@ -854,8 +1010,8 @@ __NO_RETURN int
   ctl_events_init(&e_pd16d, EVT_NONE); ctl_events_init(&e_pd16d_err, EVT_NONE);
                                        ctl_events_init(&e_ecu_upd0,  EVT_NONE);
 
-  genout.as_uint32 = 0;
   ctl_mutex_init(&mtx_genout);
+  ctl_mutex_init(&mtx_gensens);
 
   ctl_memory_area_init(&frames, frame_mem, FRAME_WORDSIZE, FRAME_COUNT);
   ctl_message_queue_init(&txq, txq_mem, TXQ_COUNT);
@@ -985,9 +1141,11 @@ __NO_RETURN int
       }
     }
 
-    sv = lookup((ctl_get_current_time()/4)%1000); /* 1/4 Hz */
+    sv = lookup((ctl_get_current_time()/15)%1000); /* 1/15 Hz */
     /*> TEMPORARY: final solution still TBD <*/
+    #ifdef NDEBUG
     __WFI();
+    #endif
   }
 }
 
