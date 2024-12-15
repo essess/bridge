@@ -7,6 +7,9 @@
  * Built upon: https://github.com/WeActStudio/WeActStudio.STM32G474CoreBoard
  * with a STM32G474CEU6 onboard (170Mhz, 128KB RAM, 512KB ROM)
  *
+ * See also: https://github.com/STMicroelectronics/stm32g4xx-hal-driver
+ *           https://htmlpreview.github.io/?https://github.com/STMicroelectronics/STM32CubeG4/blob/master/Release_Notes.html
+ *
  * IN USE:
  *    PC.6  - BLUE LED
  *    PC.13 - USER BUTTON
@@ -25,13 +28,15 @@
 #include <ctl_api.h>
 
 #include "main.h"
-#include "can.h"
-#include "debugio.h"
-#include "stm32g4xx.h"
-#include "stm32g4xx_ll_gpio.h"
-#include "stm32g4xx_ll_bus.h"
-#include "stm32g4xx_ll_system.h"
-#include "stm32g4xx_ll_exti.h"
+#include "debugio.h"                /**< do not use within IRQ contexts! */
+#include "stm32g4xx.h"                // get to point where these can be del'd
+#include "stm32g4xx_ll_gpio.h"        // get to point where these can be del'd
+#include "stm32g4xx_ll_bus.h"         // get to point where these can be del'd
+#include "stm32g4xx_ll_system.h"      // get to point where these can be del'd
+#include "stm32g4xx_ll_exti.h"        // get to point where these can be del'd
+#include "stm32g4xx_ll_rcc.h"         // get to point where these can be del'd
+
+#include "stm32g4xx_hal.h"
 
 /** ---------------------------------------------------------------------------
  * @internal
@@ -63,10 +68,122 @@ typedef enum _known_haltech_rxids_t {
 
 } known_haltech_rxids_t;
 
-typedef enum _evt_t { /*! event set e, e_err, e_ioa, ... (uint32_t) */
+/**
+ * [ 4bits ][   6bits   ][    6bits     ]
+ * [  0000 ][ module_id ][   code_id    ]
+ */
+
+#define RESERVED_MODULE         ( 0)    /**< NOT available for use */
+#define MISC_MODULE             ( 1)
+#define IOA_MODULE              ( 2)
+#define IOB_MODULE              ( 3)
+#define PD16A_MODULE            ( 4)
+#define PD16B_MODULE            ( 5)
+#define PD16C_MODULE            ( 6)
+#define PD16D_MODULE            ( 7)
+
+#define _CODE( mod_, code_ )    ( ((mod_&0x3ful) << 6) | (code_&0x3ful) )
+
+#define MISC_CODE( code_ )      ( _CODE( MISC_MODULE,  code_ ) )
+#define IOA_CODE( code_ )       ( _CODE( IOA_MODULE,   code_ ) )
+#define IOB_CODE( code_ )       ( _CODE( IOB_MODULE,   code_ ) )
+#define PD16A_CODE( code_ )     ( _CODE( PD16A_MODULE, code_ ) )
+#define PD16B_CODE( code_ )     ( _CODE( PD16B_MODULE, code_ ) )
+#define PD16C_CODE( code_ )     ( _CODE( PD16C_MODULE, code_ ) )
+#define PD16D_CODE( code_ )     ( _CODE( PD16D_MODULE, code_ ) )
+
+#define GET_MODULE( code_ )     ( (code_ & (0x3fu<<6)) >> 6 )
+#define GET_CODE( code_ )       ( code_ & 0x3fu )
+
+typedef enum _errcode_t { /*! error codes */
+  CODE_NONE    = 0,
+
+  CODE_TXQFULL           = MISC_CODE( 0),
+  CODE_TXFIFO            = MISC_CODE( 1),
+  CODE_UNKMUXID          = MISC_CODE( 2),
+  CODE_DEBOUNCE_UNK0     = MISC_CODE( 3),
+  CODE_DEBOUNCE_UNK1     = MISC_CODE( 4),
+  CODE_DEBOUNCE_UNK2     = MISC_CODE( 5),
+  CODE_TXTIMEOUT         = MISC_CODE( 6),
+  CODE_FRAMELOST         = MISC_CODE( 7),
+  CODE_RXFIFO0           = MISC_CODE( 8),
+  CODE_RXFIFO1           = MISC_CODE( 9),
+  CODE_TXEFIFO           = MISC_CODE(10),
+  CODE_RXFIFO0_ALLOC     = MISC_CODE(11),
+  CODE_RXQFULL           = MISC_CODE(12),
+  CODE_TXBUF_ABT         = MISC_CODE(13),
+  CODE_ERR_PASSIVE       = MISC_CODE(14),
+  CODE_ERR_WARNING       = MISC_CODE(15),
+  CODE_BUS_OFF           = MISC_CODE(16),
+  CODE_GENSENS_LOCK_FAIL = MISC_CODE(17),
+  CODE_GENOUT_LOCK_FAIL  = MISC_CODE(18),
+  CODE_UNKNOWN_ECUFRAME  = MISC_CODE(19),
+
+  CODE_IOA_SENDSTATUS  = IOA_CODE( 0),
+  CODE_IOA_ALLOCSTATUS = IOA_CODE( 1),
+  CODE_IOA_SENDAVI14   = IOA_CODE( 2),
+  CODE_IOA_SENDDPI12   = IOA_CODE( 3),
+  CODE_IOA_SENDDPI34   = IOA_CODE( 4),
+
+  CODE_IOB_SENDSTATUS  = IOB_CODE( 0),
+  CODE_IOB_ALLOCSTATUS = IOB_CODE( 1),
+  CODE_IOB_SENDAVI14   = IOA_CODE( 2),
+  CODE_IOB_SENDDPI12   = IOA_CODE( 3),
+  CODE_IOB_SENDDPI34   = IOA_CODE( 4),
+
+  CODE_PD16A_SENDSTATUS  = PD16A_CODE( 0),
+  CODE_PD16A_ALLOCSTATUS = PD16A_CODE( 1),
+  CODE_PD16A_SENDAVI1    = PD16A_CODE( 2),
+  CODE_PD16A_SENDAVI2    = PD16A_CODE( 3),
+  CODE_PD16A_SENDAVI3    = PD16A_CODE( 4),
+  CODE_PD16A_SENDAVI4    = PD16A_CODE( 5),
+  CODE_PD16A_SENDSPI1    = PD16A_CODE( 6),
+  CODE_PD16A_SENDSPI2    = PD16A_CODE( 7),
+  CODE_PD16A_SENDSPI3    = PD16A_CODE( 8),
+  CODE_PD16A_SENDSPI4    = PD16A_CODE( 9),
+  CODE_PD16A_SENDHCO251  = PD16A_CODE(10),
+  CODE_PD16A_SENDHCO252  = PD16A_CODE(11),
+  CODE_PD16A_SENDHCO253  = PD16A_CODE(12),
+  CODE_PD16A_SENDHCO254  = PD16A_CODE(13),
+  CODE_PD16A_SENDHCO81   = PD16A_CODE(14),
+  CODE_PD16A_SENDHCO82   = PD16A_CODE(15),
+  CODE_PD16A_SENDHCO83   = PD16A_CODE(16),
+  CODE_PD16A_SENDHCO84   = PD16A_CODE(17),
+  CODE_PD16A_SENDHCO85   = PD16A_CODE(18),
+  CODE_PD16A_SENDHCO86   = PD16A_CODE(19),
+  CODE_PD16A_SENDHCO87   = PD16A_CODE(20),
+  CODE_PD16A_SENDHCO88   = PD16A_CODE(21),
+  CODE_PD16A_SENDHCO89   = PD16A_CODE(22),
+  CODE_PD16A_SENDHCO810  = PD16A_CODE(23),
+  CODE_PD16A_SENDHBO1    = PD16A_CODE(24),
+  CODE_PD16A_SENDHBO2    = PD16A_CODE(25),
+  CODE_PD16A_SENDDIAG0   = PD16A_CODE(26),
+  CODE_PD16A_SENDDIAG1   = PD16A_CODE(27),
+  CODE_PD16A_SENDDIAG2   = PD16A_CODE(28),
+  CODE_PD16A_SENDDIAG3   = PD16A_CODE(29),
+  CODE_PD16A_SENDDIAG4   = PD16A_CODE(30),
+  CODE_PD16A_SENDDIAG5   = PD16A_CODE(31),
+
+  CODE_PD16B_SENDSTATUS  = PD16B_CODE( 0),
+  CODE_PD16B_ALLOCSTATUS = PD16B_CODE( 1),
+
+  CODE_PD16C_SENDSTATUS  = PD16C_CODE( 0),
+  CODE_PD16C_ALLOCSTATUS = PD16C_CODE( 1),
+
+  CODE_PD16D_SENDSTATUS  = PD16D_CODE( 0),
+  CODE_PD16D_ALLOCSTATUS = PD16D_CODE( 1),
+
+  CODE_UNKNOWN = ~0ul
+} errcode_t;
+CTL_MESSAGE_QUEUE_t codes;
+
+typedef enum _evt_t { /*! event set e, e_ioa, ... (uint32_t) */
 
   /*> BEGIN e <*/
   EVT_LED_CHIRP = (1<<24),
+
+  EVT_HTBUS_RXQ_NOTEMPTY = (1<<9),
+  EVT_HTBUS_TXQWD        = (1<<8),
 
   EVT_BOOT0_BUTUP        = (1<<7),
   EVT_BOOT0_BUTDOWN      = (1<<6),
@@ -122,23 +239,6 @@ typedef enum _evt_t { /*! event set e, e_err, e_ioa, ... (uint32_t) */
   EVT_PD16_AVI1    = (1<<0),
   /*> END   e_pd16 <*/
 
-  /*> BEGIN e_err <*/
-  EVT_ERR_GENSENS_LOCK_FAIL  = (1<<3),
-  EVT_ERR_GENOUT_LOCK_FAIL   = (1<<2),
-  EVT_ERR_UNKNOWN_ECUFRAME   = (1<<1),
-  EVT_ERR_UNHANDLED_ECUFRAME = (1<<0),
-  /*> END   e_err <*/
-
-  /*> BEGIN e_ioe_err <*/
-  EVT_IOE_ERR_SENDSTATUS  = (1<<1),
-  EVT_IOE_ERR_ALLOCSTATUS = (1<<0),
-  /*> END   e_ioe_err <*/
-
-  /*> BEGIN e_pd16_err <*/
-  EVT_PD16_ERR_SENDSTATUS  = (1<<1),
-  EVT_PD16_ERR_ALLOCSTATUS = (1<<0),
-  /*> END   e_pd16_err <*/
-
   /*> BEGIN e_ecu_upd0 <*/
   EVT_ECU_GENSENS10 = (1<<29),
   EVT_ECU_GENSENS9  = (1<<28),
@@ -179,16 +279,10 @@ typedef enum _evt_t { /*! event set e, e_err, e_ioa, ... (uint32_t) */
  * @internal
  * @brief protos/fwdrefs/data
  */
-can_t *fdcan2;
-
-static CTL_EVENT_SET_t e, e_err;                        /*< top-level events  */
-static CTL_EVENT_SET_t e_ioa, e_ioa_err,                /*< IOE events        */
-                       e_iob, e_iob_err;
-static CTL_EVENT_SET_t e_pd16a, e_pd16a_err,            /*< PD16 events       */
-                       e_pd16b, e_pd16b_err,
-                       e_pd16c, e_pd16c_err,
-                       e_pd16d, e_pd16d_err;
-static CTL_EVENT_SET_t e_ecu_upd0;                      /*< ECU update events */
+static CTL_EVENT_SET_t e;             /*< top-level events  */
+static CTL_EVENT_SET_t e_ioa, e_iob;  /*< IOE events -TEMP  */
+static CTL_EVENT_SET_t e_pd16a;       /*< PD16 events -TEMP */
+static CTL_EVENT_SET_t e_ecu_upd0;    /*< ECU update events */
 
 
 static __NO_RETURN void task_test(void *);
@@ -223,6 +317,8 @@ static __NO_RETURN void task_pd16d_avispi_out(void *);
 static __NO_RETURN void task_pd16d_hco8hco25hbo_out(void *);
 static __NO_RETURN void task_pd16d_diag_out(void *);
 
+static __NO_RETURN void task_htbus(void *);
+
 typedef struct _debounce_info_t { /*! use with task_but_debounce() */
   CTL_TIME_t to;
   CTL_EVENT_SET_t *pe;
@@ -232,14 +328,31 @@ typedef struct _debounce_info_t { /*! use with task_but_debounce() */
   CTL_EVENT_SET_t down;
 } debounce_info_t;
 
-CTL_MEMORY_AREA_t frames;
-#define FRAME_WORDSIZE  ((sizeof(canframe_t)/sizeof(unsigned))+1)
-#define FRAME_COUNT     (64)
-unsigned frame_mem[FRAME_WORDSIZE*FRAME_COUNT];
+typedef struct _canframe_t {
+  union {
+    FDCAN_RxHeaderTypeDef rxhdr;
+    FDCAN_TxHeaderTypeDef txhdr;
+  };
+  union {
+    uint8_t  as_uint8[64];
+    uint32_t as_uint32[64/sizeof(uint32_t)];
+  } data;
+} canframe_t;
 
 CTL_MESSAGE_QUEUE_t txq;
-#define TXQ_COUNT (64)
+#define TXQ_COUNT (16)
 void *txq_mem[TXQ_COUNT];
+
+CTL_MESSAGE_QUEUE_t rxq;
+#define RXQ_COUNT (16)
+void *rxq_mem[RXQ_COUNT];
+
+CTL_MEMORY_AREA_t frames;
+#define FRAME_WORDSIZE  ((sizeof(canframe_t)/sizeof(unsigned))+1)
+#define FRAME_COUNT     (TXQ_COUNT+RXQ_COUNT)
+unsigned frame_mem[FRAME_WORDSIZE*FRAME_COUNT];
+
+static unsigned htbus_send(canframe_t *);
 
 typedef union _genout_t { /*! GenOut1 through GenOut20 state */
   struct {                /*   COMPILER DEPENDENT ORDERING   */
@@ -290,6 +403,21 @@ typedef struct _gensens_t { /*! GenSens1 through GenSens10 raw values     */
 } gensens_t;
 static gensens_t gensens;
 static CTL_MUTEX_t mtx_gensens;
+
+/** -------------------------------------------------------------------------
+ * @internal
+ * @brief The STM32Cube HAL typically uses current time/tick value for busy-waiting
+ *        be careful/cognizant of where this is called. May need to do a yield for a
+ *        millisec here in order to not block up everything else.
+ *
+ */
+uint32_t
+  HAL_GetTick(void)
+{
+  assert(SysTick->CTRL & (SysTick_CTRL_TICKINT_Msk | SysTick_CTRL_ENABLE_Msk));
+  static_assert(sizeof(uint32_t) >= sizeof(CTL_TIME_t));
+  return (uint32_t)ctl_get_current_time();
+}
 
 /** ---------------------------------------------------------------------------
  * @internal
@@ -462,11 +590,12 @@ void EXTI15_10_IRQHandler(void)
  */
 void ctl_start_timer(CTL_ISR_FN_t timerFn)
 {
-  (void)timerFn;
+  assert(timerFn == ctl_increment_tick_from_isr);
   assert(SystemCoreClock == 170000000);
   enum { ONE_MS = 170000000/8/1000 };             /**< SystemCoreClock/SYSTICKDIVIDER/Hz   */
   SysTick->LOAD = ONE_MS-1;
   ctl_time_increment = (SysTick->LOAD+1)/ONE_MS;  /**< ctl_increment_tick_from_isr() param */
+//ctl_timeslice_period = ctl_time_increment;      /**< round robining of tasks w/same pri  */
   SysTick->VAL  = 0;
   SysTick->CTRL = SysTick_CTRL_TICKINT_Msk | SysTick_CTRL_ENABLE_Msk;
   NVIC_SetPriority(PendSV_IRQn, IRQPRI_PENDSV);   /**< must be lowest CTL aware priority   */
@@ -492,106 +621,23 @@ void SysTick_Handler(void)
  * @internal
  * @brief uh oh
  */
-__NO_RETURN void
-  ctl_handle_error(CTL_ERROR_CODE_t e)
+void ctl_handle_error(CTL_ERROR_CODE_t e)
 {
+  switch(e) {
+    case CTL_ERROR_NO_TASKS_TO_RUN:
+      debug_puts("CTL_ERROR_NO_TASKS_TO_RUN"); break;
+    case CTL_UNSUPPORTED_CALL_FROM_ISR:
+      debug_puts("CTL_UNSUPPORTED_CALL_FROM_ISR"); break;
+    case CTL_MUTEX_UNLOCK_CALL_ERROR:
+      debug_puts("CTL_MUTEX_UNLOCK_CALL_ERROR"); break;
+    case CTL_UNSPECIFIED_ERROR:
+      debug_puts("CTL_UNSPECIFIED_ERROR"); break;
+    case CTL_STACK_OVERFLOW:
+      debug_puts("CTL_STACK_OVERFLOW"); break;
+    default:
+      debug_puts("UNKNOWN CTL_ERROR_CODE_t");
+  };
   debug_break();
-  debug_exit(e);
-}
-
-/** ---------------------------------------------------------------------------
- * @internal
- * @brief init canfd2 i/o's
- *        PB.5  - FDCAN2_RX (HALTECH BUS)
- *        PB.6  - FDCAN2_TX (HALTECH BUS)
- */
-static int
-  canfd2io_init(void)
-{
-  uint32_t r;
-  assert(FDCAN2->ENDN == 0x87654321);
-  FDCAN2->CCCR |= (FDCAN_CCCR_INIT | FDCAN_CCCR_CCE);
-
-  r = FDCAN2->RXGFC;
-  MODIFY_REG(r, FDCAN_RXGFC_LSE,  8 <<FDCAN_RXGFC_LSE_Pos);
-  MODIFY_REG(r, FDCAN_RXGFC_LSS, 28 <<FDCAN_RXGFC_LSS_Pos);
-  FDCAN2->RXGFC = r;
-
-  /*  170MHz/DBRP = 1/170MHz tq    */
-  /*  DBRP   := /1                 */
-  /*  DTSEG1 := 11                 */
-  /*  DTSEG2 := 9                  */
-  /*  DSJW   := 8                  */
-  /* [1+11+9]tq = 8.1MBit(+/-8tq)  */
-  /* 123.5ns bit time ~1.2% error  */
-  r = FDCAN2->DBTP;     /**< R-M-W */
-  MODIFY_REG(r, FDCAN_DBTP_DBRP,    (1-1)<<FDCAN_DBTP_DBRP_Pos);
-  MODIFY_REG(r, FDCAN_DBTP_DTSEG1, (11-1)<<FDCAN_DBTP_DTSEG1_Pos);
-  MODIFY_REG(r, FDCAN_DBTP_DTSEG2,  (9-1)<<FDCAN_DBTP_DTSEG2_Pos);
-  MODIFY_REG(r, FDCAN_DBTP_DSJW,    (8-1)<<FDCAN_DBTP_DSJW_Pos);
-  FDCAN2->DBTP = r;
-
-  /*  170MHz/NBRP = 1/34MHz tq    */
-  /*  NBRP   := /5                */
-  /*  NTSEG1 := 23                */
-  /*  NTSEG2 := 10                */
-  /*  NSJW   := 8                 */
-  /* [1+23+10]tq = 1MBit(+/-8tq)  */
-  r = FDCAN2->NBTP;    /**< R-M-W */
-  MODIFY_REG(r, FDCAN_NBTP_NBRP,    (5-1)<<FDCAN_NBTP_NBRP_Pos);
-  MODIFY_REG(r, FDCAN_NBTP_NTSEG1, (23-1)<<FDCAN_NBTP_NTSEG1_Pos);
-  MODIFY_REG(r, FDCAN_NBTP_NTSEG2, (10-1)<<FDCAN_NBTP_NTSEG2_Pos);
-  MODIFY_REG(r, FDCAN_NBTP_NSJW,    (8-1)<<FDCAN_NBTP_NSJW_Pos);
-  FDCAN2->NBTP = r;
-
-  ErrorStatus e = ERROR;
-  LL_GPIO_InitTypeDef pin;
-  LL_AHB2_GRP1_EnableClock(LL_AHB2_GRP1_PERIPH_GPIOB);
-
-  /* PB.5  - FDCAN2_RX (HALTECH BUS) [AF9] */
-  LL_GPIO_StructInit(&pin);
-  pin.Mode      = LL_GPIO_MODE_ALTERNATE;
-  pin.Alternate = LL_GPIO_AF_9;
-  pin.Pin       = LL_GPIO_PIN_5;
-  pin.Pull      = LL_GPIO_PULL_UP;
-  e = LL_GPIO_Init(GPIOB, &pin);
-  assert(e == SUCCESS);
-
-  /* PB.6  - FDCAN2_TX (HALTECH BUS) [AF9] */
-  LL_GPIO_StructInit(&pin);
-  pin.Mode      = LL_GPIO_MODE_ALTERNATE;
-  pin.Alternate = LL_GPIO_AF_9;
-  pin.Pin       = LL_GPIO_PIN_6;
-  pin.Speed     = LL_GPIO_SPEED_FREQ_VERY_HIGH;
-  pin.Pull      = LL_GPIO_PULL_NO;
-  e = LL_GPIO_Init(GPIOB, &pin);
-  assert(e == SUCCESS);
-
-  return ~0;
-}
-
-/** -------------------------------------------------------------------------
- * @internal
- * @brief per-port can initialization; called from the same context
- *        as where can_init() was called
- * @retval int non-zero on success
- */
-int
-  can_init_byid_cb(canid_t id)
-{
-  int result = 0;
-  switch(id) {
-    case CANID_FDCAN1:
-      /* unused */
-      break;
-    case CANID_FDCAN2:
-      result = canfd2io_init();
-      break;
-    case CANID_FDCAN3:
-      /* unused */
-      break;
-  }
-  return result;
 }
 
 /** -------------------------------------------------------------------------
@@ -603,9 +649,7 @@ static void
   decode_3E7(canframe_t * const pframe)
 {
   assert(pframe);
-  assert(!pframe->extended);
-  assert(pframe->id = 0x3E7);
-  assert(pframe->dlc >= 8);
+  assert(pframe->rxhdr.DataLength >= 8);
 
   enum { BASE_MS = 50 };   /**< 20Hz base emit rate */
   if(ctl_mutex_lock(&mtx_gensens, CTL_TIMEOUT_DELAY, BASE_MS/2)) {
@@ -634,8 +678,8 @@ static void
 
     ctl_events_pulse(&e_ecu_upd0, pulse);
     ctl_mutex_unlock(&mtx_gensens);
-  } else { ctl_events_set_clear(&e_err, EVT_ERR_GENSENS_LOCK_FAIL, EVT_NONE); }
-  
+  } else { ctl_message_queue_post_nb(&codes, (void*)CODE_GENSENS_LOCK_FAIL); }
+
 }
 
 /** -------------------------------------------------------------------------
@@ -647,9 +691,7 @@ static void
   decode_3E8(canframe_t * const pframe)
 {
   assert(pframe);
-  assert(!pframe->extended);
-  assert(pframe->id = 0x3E8);
-  assert(pframe->dlc >= 8);
+  assert(pframe->rxhdr.DataLength >= 8);
 
   enum { BASE_MS = 50 };   /**< 20Hz base emit rate */
   if(ctl_mutex_lock(&mtx_gensens, CTL_TIMEOUT_DELAY, BASE_MS/2)) {
@@ -678,7 +720,7 @@ static void
 
     ctl_events_pulse(&e_ecu_upd0, pulse);
     ctl_mutex_unlock(&mtx_gensens);
-  } else { ctl_events_set_clear(&e_err, EVT_ERR_GENSENS_LOCK_FAIL, EVT_NONE); }
+  } else { ctl_message_queue_post_nb(&codes, (void*)CODE_GENSENS_LOCK_FAIL); }
 
 }
 
@@ -692,9 +734,7 @@ static void
   decode_3E9(canframe_t * const pframe)
 {
   assert(pframe);
-  assert(!pframe->extended);
-  assert(pframe->id = 0x3E9);
-  assert(pframe->dlc >= 4);
+  assert(pframe->rxhdr.DataLength >= 4);
 
   enum { BASE_MS = 50 };   /**< 20Hz base emit rate */
   if(ctl_mutex_lock(&mtx_gensens, CTL_TIMEOUT_DELAY, BASE_MS/2)) {
@@ -713,7 +753,7 @@ static void
 
     ctl_events_pulse(&e_ecu_upd0, pulse);
     ctl_mutex_unlock(&mtx_gensens);
-  } else { ctl_events_set_clear(&e_err, EVT_ERR_GENSENS_LOCK_FAIL, EVT_NONE); }
+  } else { ctl_message_queue_post_nb(&codes, (void*)CODE_GENSENS_LOCK_FAIL); }
 }
 
 /** -------------------------------------------------------------------------
@@ -726,9 +766,7 @@ static void
   decode_6F7(canframe_t * const pframe)
 {
   assert(pframe);
-  assert(!pframe->extended);
-  assert(pframe->id = 0x6F7);
-  assert(pframe->dlc >= 4);
+  assert(pframe->rxhdr.DataLength >= 4);
 
   enum { BASE_MS = 100 };   /**< 10Hz base emit rate */
   genout_t const update = { .as_uint32 = pframe->data.as_uint32[0] };
@@ -758,7 +796,7 @@ static void
     genout.as_uint32 = update.as_uint32;  /**< update internal state */
     ctl_events_pulse(&e_ecu_upd0, pulse);
     ctl_mutex_unlock(&mtx_genout);
-  } else { ctl_events_set_clear(&e_err, EVT_ERR_GENOUT_LOCK_FAIL, EVT_NONE); }
+  } else { ctl_message_queue_post_nb(&codes, (void*)CODE_GENOUT_LOCK_FAIL); }
 
 }
 
@@ -772,8 +810,6 @@ static void
   decode_700(canframe_t * const pframe)
 {
   assert(pframe);
-  assert(!pframe->extended);
-  assert(pframe->id = 0x700);
 
   enum {
     HCO25_01 = (0<<5)|(0<<0),   /**< 5Hz, 10ms spacing (4x) */
@@ -802,12 +838,9 @@ static void
 
   switch(pframe->data.as_uint8[0]) {
     case HCO25_01:
-      //volatile int i = 0;
-      break;
     case HCO25_02:
     case HCO25_03:
     case HCO25_04:
-      break;
     case HCO8_01:
     case HCO8_02:
     case HCO8_03:
@@ -820,15 +853,13 @@ static void
     case HCO8_10:
     case HCO8_11:
     case HCO8_12:
-      break;
     case HBO_01:
     case HBO_02:
     case HBO_03:
     case HBO_04:
-      //ctl_events_pulse(&e, EVT_LED_CHIRP);
       break;
     default:
-      assert(!"unknown type/mux for frame 0x700");
+      (void)ctl_message_queue_post_nb(&codes, (void*)CODE_UNKMUXID);
       return;
   }
 }
@@ -842,8 +873,9 @@ static void
   filter(canframe_t * const pframe)
 {
   assert(pframe);
-  assert(!pframe->extended);
-  switch(pframe->id) {
+  assert(pframe->rxhdr.IdType != FDCAN_EXTENDED_ID);
+  assert(pframe->rxhdr.FDFormat == FDCAN_FRAME_CLASSIC);
+  switch(pframe->rxhdr.Identifier) {
     case HTID_ECU_3E7:
       decode_3E7(pframe);
       break;
@@ -860,7 +892,7 @@ static void
       decode_700(pframe);
       break;
     default:
-      ctl_events_set_clear(&e_err, EVT_ERR_UNKNOWN_ECUFRAME, EVT_NONE);
+      /* ctl_message_queue_post_nb(&codes, (void*)CODE_UNKNOWN_ECUFRAME); */
   }
 }
 
@@ -986,35 +1018,42 @@ static unsigned const
  * @brief entry point
  */
 
-volatile unsigned sv;
+volatile unsigned sine;
 
 __NO_RETURN int
   main(void)
 {
+  ctl_start_timer(ctl_increment_tick_from_isr);           /**< HAL depends on ticks */
+  static CTL_TASK_t self;
+  ctl_task_init(&self, TASKPRI_HIGHEST, "idle");
+
   swdio_init();
   ledio_init();
   buttonio_init();
-  fdcan2 = can_init(CANID_FDCAN2); assert(fdcan2);
-  can_start(fdcan2);
 
-  static CTL_TASK_t self;
-  ctl_task_init(&self, TASKPRI_HIGHEST, "idle");
-  ctl_start_timer(ctl_increment_tick_from_isr);
+  LL_APB1_GRP1_ForceReset(LL_APB1_GRP1_PERIPH_FDCAN);     /**  base FDCAN config    */
+  LL_RCC_SetFDCANClockSource(LL_RCC_FDCAN_CLKSOURCE_PLL);
+  LL_APB1_GRP1_EnableClock(LL_APB1_GRP1_PERIPH_FDCAN);
+  LL_APB1_GRP1_ReleaseReset(LL_APB1_GRP1_PERIPH_FDCAN);
+  FDCAN_CONFIG->CKDIV = 0;                                /**< PDIV := 0000b (/1)   */
+                                                          /*   170MHz/PDIV = 170MHz */
 
-  ctl_events_init(&e,       EVT_NONE); ctl_events_init(&e_err,       EVT_NONE);
-  ctl_events_init(&e_ioa,   EVT_NONE); ctl_events_init(&e_ioa_err,   EVT_NONE);
-  ctl_events_init(&e_iob,   EVT_NONE); ctl_events_init(&e_iob_err,   EVT_NONE);
-  ctl_events_init(&e_pd16a, EVT_NONE); ctl_events_init(&e_pd16a_err, EVT_NONE);
-  ctl_events_init(&e_pd16b, EVT_NONE); ctl_events_init(&e_pd16b_err, EVT_NONE);
-  ctl_events_init(&e_pd16c, EVT_NONE); ctl_events_init(&e_pd16c_err, EVT_NONE);
-  ctl_events_init(&e_pd16d, EVT_NONE); ctl_events_init(&e_pd16d_err, EVT_NONE);
-                                       ctl_events_init(&e_ecu_upd0,  EVT_NONE);
+  /* init all global events/mutexes/mem/queues/etc before kicking off tasks */
+  ctl_events_init(&e,          EVT_NONE);
+  ctl_events_init(&e_ioa,      EVT_NONE);
+  ctl_events_init(&e_iob,      EVT_NONE);
+  ctl_events_init(&e_pd16a,    EVT_NONE);
+  ctl_events_init(&e_ecu_upd0, EVT_NONE);
 
   ctl_mutex_init(&mtx_genout);
   ctl_mutex_init(&mtx_gensens);
 
   ctl_memory_area_init(&frames, frame_mem, FRAME_WORDSIZE, FRAME_COUNT);
   ctl_message_queue_init(&txq, txq_mem, TXQ_COUNT);
+  ctl_message_queue_init(&rxq, rxq_mem, RXQ_COUNT);
+
+  static void *codes_mem[64];
+  ctl_message_queue_init(&codes, codes_mem, 64);
 
   { /* boot0 button debounce */
     static debounce_info_t di = {
@@ -1027,7 +1066,7 @@ __NO_RETURN int
     };
     static CTL_TASK_t task;
     static unsigned stack[CTL_CPU_STATE_WORD_SIZE+4];
-    ctl_task_run(&task, TASKPRI_BUTTON, &task_but_debounce, &di, "but_boot0_debounce", sizeof(stack)/sizeof(unsigned), stack, 0);
+    ctl_task_run(&task, TASKPRI_BUTLED, &task_but_debounce, &di, "but_boot0_debounce", sizeof(stack)/sizeof(unsigned), stack, 0);
   }
   { /* user button debounce */
     static debounce_info_t di = {
@@ -1040,12 +1079,17 @@ __NO_RETURN int
     };
     static CTL_TASK_t task;
     static unsigned stack[CTL_CPU_STATE_WORD_SIZE+4];
-    ctl_task_run(&task, TASKPRI_BUTTON, &task_but_debounce, &di, "but_user_debounce", sizeof(stack)/sizeof(unsigned), stack, 0);
+    ctl_task_run(&task, TASKPRI_BUTLED, &task_but_debounce, &di, "but_user_debounce", sizeof(stack)/sizeof(unsigned), stack, 0);
   }
   { /* LED control */
     static CTL_TASK_t task;
     static unsigned stack[CTL_CPU_STATE_WORD_SIZE+4];
-    ctl_task_run(&task, TASKPRI_LOWEST, &task_led_chirp, (void*)100, "led_chirp", sizeof(stack)/sizeof(unsigned), stack, 0);
+    ctl_task_run(&task, TASKPRI_BUTLED, &task_led_chirp, (void*)100, "led_chirp", sizeof(stack)/sizeof(unsigned), stack, 0);
+  }
+  { /* htbus management */
+    static CTL_TASK_t task;
+    static unsigned stack[CTL_CPU_STATE_WORD_SIZE+4];
+    ctl_task_run(&task, TASKPRI_HTBUS, &task_htbus, (void*)1000, "htbus", sizeof(stack)/sizeof(unsigned), stack, 0);
   }
   { /* IOE status generation */
     static CTL_TASK_t task;
@@ -1103,46 +1147,21 @@ __NO_RETURN int
     ctl_task_run(&task, TASKPRI_PD16OUT, &task_pd16a_diag_out, 0, "pd16a_diag_out", sizeof(stack)/sizeof(unsigned), stack, 0);
   }
 
+  //{ /* for testing whatever you want */
+  //  static CTL_TASK_t task;
+  //  static unsigned stack[CTL_CPU_STATE_WORD_SIZE+256];
+  //  ctl_task_run(&task, TASKPRI_TEST, &task_test, 0, "task_test", sizeof(stack)/sizeof(unsigned), stack, 0);
+  //}
 
-
-  { /* for testing whatever you want */
-    static CTL_TASK_t task;
-    static unsigned stack[CTL_CPU_STATE_WORD_SIZE+32];
-    ctl_task_run(&task, TASKPRI_LOWEST, &task_test, 0, "task_test", sizeof(stack)/sizeof(unsigned), stack, 0);
-  }
-
-
-
-  // next?
-  //
-  // While setting up channels, have generic outputs be driven via rotary
-  // inputs .. so we can watch it in the CAN stream for easy future listeners
-  // (see 0x6F7/3E7/3E8/3E9) (FIRST 10 SENSORS / FIRST 20 OUTPUTS)
-  //
-  // decode these ^^ make sure I understand them.
-  // this is going to be something crutial for the next few stages
-
-  (void)ctl_task_set_priority(&self, TASKPRI_LOWEST);
+  (void)ctl_task_set_priority(&self, TASKPRI_IDLE);
   lock_io();
   while(~0) { /**< IDLE */
-
-    /*> TEMPORARY: final solution still TBD <*/
-    canframe_t frame;
-    while(can_in_rxf0(fdcan2, &frame))
-      filter(&frame);
-
-    while(can_peek(fdcan2) && ctl_message_queue_num_used(&txq)) {
-      canframe_t *pframe;
-      if(ctl_message_queue_receive_nb(&txq, (void**)&pframe)) {
-        assert(pframe);
-        int const success = can_out(fdcan2, pframe);
-        assert(success);
-        ctl_memory_area_free(&frames, (void*)pframe);
-      }
+    sine = lookup((ctl_get_current_time()/15)%1000); /* 1/15 Hz */
+    errcode_t e;
+    if(ctl_message_queue_receive_nb(&codes, (void**)&e)) {
+      assert(e != CODE_NONE);
+      debug_printf("MODULE: %d, CODE: %d\r\n", GET_MODULE(e), GET_CODE(e)); /* dump codes until something better is made */
     }
-
-    sv = lookup((ctl_get_current_time()/15)%1000); /* 1/15 Hz */
-    /*> TEMPORARY: final solution still TBD <*/
     #ifdef NDEBUG
     __WFI();
     #endif
@@ -1158,12 +1177,133 @@ static __NO_RETURN void
 {
   (void)arg;
   while(~0) {
-    if(ctl_events_wait_uc(CTL_EVENT_WAIT_ANY_EVENTS, &e_ecu_upd0, EVT_ECU_GENOUT20 | EVT_ECU_GENOUT19 | EVT_ECU_GENOUT18 | EVT_ECU_GENOUT17 |
-                                                                  EVT_ECU_GENOUT16 | EVT_ECU_GENOUT15 | EVT_ECU_GENOUT14 | EVT_ECU_GENOUT13 |
-                                                                  EVT_ECU_GENOUT12 | EVT_ECU_GENOUT11 | EVT_ECU_GENOUT10 | EVT_ECU_GENOUT9  |
-                                                                  EVT_ECU_GENOUT8  | EVT_ECU_GENOUT7  | EVT_ECU_GENOUT6  | EVT_ECU_GENOUT5  |
-                                                                  EVT_ECU_GENOUT4  | EVT_ECU_GENOUT3  | EVT_ECU_GENOUT2  | EVT_ECU_GENOUT1 ))
-      led_chirp();
+    CTL_TIME_t const t0 = ctl_get_current_time();
+    unsigned t;
+    /* burst 8 'out of band' packets and make sure that the PCAN can pick them up correctly */
+    /* this tests that the whole tx queue mechanism works as intended -> watch scope        */
+    canframe_t *pframe;
+
+    pframe = (canframe_t*)ctl_memory_area_allocate(&frames); assert(pframe);
+    pframe->txhdr.Identifier = 0x100;
+    pframe->txhdr.IdType = FDCAN_STANDARD_ID;
+    pframe->txhdr.TxFrameType = FDCAN_DATA_FRAME;
+    pframe->txhdr.BitRateSwitch = FDCAN_BRS_OFF;
+    pframe->txhdr.FDFormat = FDCAN_CLASSIC_CAN;
+    pframe->txhdr.DataLength = 4;
+    t = SysTick->VAL;
+    pframe->data.as_uint8[3] = t >> 0;
+    pframe->data.as_uint8[2] = t >> 8;
+    pframe->data.as_uint8[1] = t >> 16;
+    pframe->data.as_uint8[0] = 0x10;
+    if(!htbus_send(pframe))
+      ctl_memory_area_free(&frames, (unsigned*)pframe);
+
+    pframe = (canframe_t*)ctl_memory_area_allocate(&frames); assert(pframe);
+    pframe->txhdr.Identifier = 0x101;
+    pframe->txhdr.IdType = FDCAN_STANDARD_ID;
+    pframe->txhdr.TxFrameType = FDCAN_DATA_FRAME;
+    pframe->txhdr.BitRateSwitch = FDCAN_BRS_OFF;
+    pframe->txhdr.FDFormat = FDCAN_CLASSIC_CAN;
+    pframe->txhdr.DataLength = 4;
+    t = SysTick->VAL;
+    pframe->data.as_uint8[3] = t >> 0;
+    pframe->data.as_uint8[2] = t >> 8;
+    pframe->data.as_uint8[1] = t >> 16;
+    pframe->data.as_uint8[0] = 0x20;
+    if(!htbus_send(pframe))
+      ctl_memory_area_free(&frames, (unsigned*)pframe);
+
+    pframe = (canframe_t*)ctl_memory_area_allocate(&frames); assert(pframe);
+    pframe->txhdr.Identifier = 0x102;
+    pframe->txhdr.IdType = FDCAN_STANDARD_ID;
+    pframe->txhdr.TxFrameType = FDCAN_DATA_FRAME;
+    pframe->txhdr.BitRateSwitch = FDCAN_BRS_OFF;
+    pframe->txhdr.FDFormat = FDCAN_CLASSIC_CAN;
+    pframe->txhdr.DataLength = 4;
+    t = SysTick->VAL;
+    pframe->data.as_uint8[3] = t >> 0;
+    pframe->data.as_uint8[2] = t >> 8;
+    pframe->data.as_uint8[1] = t >> 16;
+    pframe->data.as_uint8[0] = 0x30;
+    if(!htbus_send(pframe))
+      ctl_memory_area_free(&frames, (unsigned*)pframe);
+
+    pframe = (canframe_t*)ctl_memory_area_allocate(&frames); assert(pframe);
+    pframe->txhdr.Identifier = 0x103;
+    pframe->txhdr.IdType = FDCAN_STANDARD_ID;
+    pframe->txhdr.TxFrameType = FDCAN_DATA_FRAME;
+    pframe->txhdr.BitRateSwitch = FDCAN_BRS_OFF;
+    pframe->txhdr.FDFormat = FDCAN_CLASSIC_CAN;
+    pframe->txhdr.DataLength = 4;
+    t = SysTick->VAL;
+    pframe->data.as_uint8[3] = t >> 0;
+    pframe->data.as_uint8[2] = t >> 8;
+    pframe->data.as_uint8[1] = t >> 16;
+    pframe->data.as_uint8[0] = 0x40;
+    if(!htbus_send(pframe))
+      ctl_memory_area_free(&frames, (unsigned*)pframe);
+
+    pframe = (canframe_t*)ctl_memory_area_allocate(&frames); assert(pframe);
+    pframe->txhdr.Identifier = 0x104;
+    pframe->txhdr.IdType = FDCAN_STANDARD_ID;
+    pframe->txhdr.TxFrameType = FDCAN_DATA_FRAME;
+    pframe->txhdr.BitRateSwitch = FDCAN_BRS_OFF;
+    pframe->txhdr.FDFormat = FDCAN_CLASSIC_CAN;
+    pframe->txhdr.DataLength = 4;
+    t = SysTick->VAL;
+    pframe->data.as_uint8[3] = t >> 0;
+    pframe->data.as_uint8[2] = t >> 8;
+    pframe->data.as_uint8[1] = t >> 16;
+    pframe->data.as_uint8[0] = 0x50;
+    if(!htbus_send(pframe))
+      ctl_memory_area_free(&frames, (unsigned*)pframe);
+
+    pframe = (canframe_t*)ctl_memory_area_allocate(&frames); assert(pframe);
+    pframe->txhdr.Identifier = 0x105;
+    pframe->txhdr.IdType = FDCAN_STANDARD_ID;
+    pframe->txhdr.TxFrameType = FDCAN_DATA_FRAME;
+    pframe->txhdr.BitRateSwitch = FDCAN_BRS_OFF;
+    pframe->txhdr.FDFormat = FDCAN_CLASSIC_CAN;
+    pframe->txhdr.DataLength = 4;
+    t = SysTick->VAL;
+    pframe->data.as_uint8[3] = t >> 0;
+    pframe->data.as_uint8[2] = t >> 8;
+    pframe->data.as_uint8[1] = t >> 16;
+    pframe->data.as_uint8[0] = 0x60;
+    if(!htbus_send(pframe))
+      ctl_memory_area_free(&frames, (unsigned*)pframe);
+
+    pframe = (canframe_t*)ctl_memory_area_allocate(&frames); assert(pframe);
+    pframe->txhdr.Identifier = 0x106;
+    pframe->txhdr.IdType = FDCAN_STANDARD_ID;
+    pframe->txhdr.TxFrameType = FDCAN_DATA_FRAME;
+    pframe->txhdr.BitRateSwitch = FDCAN_BRS_OFF;
+    pframe->txhdr.FDFormat = FDCAN_CLASSIC_CAN;
+    pframe->txhdr.DataLength = 4;
+    t = SysTick->VAL;
+    pframe->data.as_uint8[3] = t >> 0;
+    pframe->data.as_uint8[2] = t >> 8;
+    pframe->data.as_uint8[1] = t >> 16;
+    pframe->data.as_uint8[0] = 0x70;
+    if(!htbus_send(pframe))
+      ctl_memory_area_free(&frames, (unsigned*)pframe);
+
+    pframe = (canframe_t*)ctl_memory_area_allocate(&frames); assert(pframe);
+    pframe->txhdr.Identifier = 0x107;
+    pframe->txhdr.IdType = FDCAN_STANDARD_ID;
+    pframe->txhdr.TxFrameType = FDCAN_DATA_FRAME;
+    pframe->txhdr.BitRateSwitch = FDCAN_BRS_OFF;
+    pframe->txhdr.FDFormat = FDCAN_CLASSIC_CAN;
+    pframe->txhdr.DataLength = 4;
+    t = SysTick->VAL;
+    pframe->data.as_uint8[3] = t >> 0;
+    pframe->data.as_uint8[2] = t >> 8;
+    pframe->data.as_uint8[1] = t >> 16;
+    pframe->data.as_uint8[0] = 0x80;
+    if(!htbus_send(pframe))
+      ctl_memory_area_free(&frames, (unsigned*)pframe);
+
+    ctl_timeout_wait(t0+500);
   }
 }
 
@@ -1213,8 +1353,8 @@ static __NO_RETURN void
             ctl_events_pulse(pdi->pe, (s==DEBOUNCE_UP)?pdi->up:pdi->down);
             s = IDLE;
           } else {
-            assert(!"unhandled event");
-            ctl_task_die(); /*> TODO: signal error <*/
+            (void)ctl_message_queue_post_nb(&codes, (void*)CODE_DEBOUNCE_UNK0);
+            ctl_task_die();
           }
         } break;
       case IDLE: { /**< block indefinitely until an edge arrives */
@@ -1224,12 +1364,12 @@ static __NO_RETURN void
                if(evt & pdi->falling) { s = DEBOUNCE_DOWN; } /*< start */
           else if(evt & pdi->rising)  { s = DEBOUNCE_UP; }   /*< start */
           else {
-            assert(!"unhandled event");
-            ctl_task_die(); /*> TODO: signal error <*/
+            (void)ctl_message_queue_post_nb(&codes, (void*)CODE_DEBOUNCE_UNK1);
+            ctl_task_die();
           }
         } break;
       default:
-        assert(!"unhandled state");
+        (void)ctl_message_queue_post_nb(&codes, (void*)CODE_DEBOUNCE_UNK2);
         ctl_task_die(); /*> TODO: signal error <*/
     }
   }
@@ -1242,21 +1382,24 @@ static __NO_RETURN void
 static __NO_RETURN void
   task_ioe_status_out(void *arg)
 {
-  enum { ID_IOEA_STATUS  = 0x2C6,
-         ID_IOEB_STATUS  = 0x2C7,
-         BASE_MS         = 100,   /* 10Hz base emit rate                */
-         LOCKOUT_MS      = 5 };   /* forced pause between status frames */
+  enum { ID_IOEA_STATUS = 0x2C6,
+         ID_IOEB_STATUS = 0x2C7,
+         BASE_MS        = 100,   /* 10Hz base emit rate                */
+         PAUSE_MS       = 5 };   /* forced pause between status frames */
+  static_assert((PAUSE_MS*2) < BASE_MS);
 
   (void)arg;
   while(~0) {
     CTL_TIME_t const t0 = ctl_get_current_time();
 
-    CTL_TIME_t t = t0;
     canframe_t *pframe = (canframe_t*)ctl_memory_area_allocate(&frames);
     if(pframe) {
-      pframe->id = ID_IOEA_STATUS;
-      pframe->extended = 0;
-      pframe->dlc = 5;
+      pframe->txhdr.Identifier = ID_IOEA_STATUS;
+      pframe->txhdr.IdType = FDCAN_STANDARD_ID;
+      pframe->txhdr.TxFrameType = FDCAN_DATA_FRAME;
+      pframe->txhdr.BitRateSwitch = FDCAN_BRS_OFF;
+      pframe->txhdr.FDFormat = FDCAN_CLASSIC_CAN;
+      pframe->txhdr.DataLength = FDCAN_DLC_BYTES_5;
       pframe->data.as_uint8[0] = (1<<4);
       pframe->data.as_uint8[1] = (2<<2)|(2<<0); /* 2.22.22 */
       pframe->data.as_uint8[2] = 22;
@@ -1264,30 +1407,32 @@ static __NO_RETURN void
       pframe->data.as_uint8[4] = 222; /**< 0: Release, 1-100: Alpha <#>, */
                                       /*   101-200: Beta <100-#>,        */
                                       /*   201-255: Experimental <200-#> */
-      if(!ctl_message_queue_post(&txq, pframe, CTL_TIMEOUT_ABSOLUTE, t+LOCKOUT_MS)) {
-        ctl_events_set_clear(&e_ioa_err, EVT_IOE_ERR_SENDSTATUS, EVT_NONE);
+      if(!htbus_send(pframe)) {
+        (void)ctl_message_queue_post_nb(&codes, (void*)CODE_IOA_SENDSTATUS);
         ctl_memory_area_free(&frames, (void*)pframe); /**< _post failed! */
       }
-      ctl_timeout_wait(t+LOCKOUT_MS);
-    } else { ctl_events_set_clear(&e_ioa_err, EVT_IOE_ERR_ALLOCSTATUS, EVT_NONE); }
+      ctl_timeout_wait(t0+(PAUSE_MS*1));
+    } else { (void)ctl_message_queue_post_nb(&codes, (void*)CODE_IOA_ALLOCSTATUS); }
 
-    t = ctl_get_current_time();
     pframe = (canframe_t*)ctl_memory_area_allocate(&frames);
     if(pframe) {
-      pframe->id = ID_IOEB_STATUS;
-      pframe->extended = 0;
-      pframe->dlc = 5;
+      pframe->txhdr.Identifier = ID_IOEB_STATUS;
+      pframe->txhdr.IdType = FDCAN_STANDARD_ID;
+      pframe->txhdr.TxFrameType = FDCAN_DATA_FRAME;
+      pframe->txhdr.BitRateSwitch = FDCAN_BRS_OFF;
+      pframe->txhdr.FDFormat = FDCAN_CLASSIC_CAN;
+      pframe->txhdr.DataLength = FDCAN_DLC_BYTES_5;
       pframe->data.as_uint8[0] = (1<<4);
       pframe->data.as_uint8[1] = (2<<2)|(2<<0);
       pframe->data.as_uint8[2] = 22;
       pframe->data.as_uint8[3] = 22;
       pframe->data.as_uint8[4] = 222;
-      if(!ctl_message_queue_post(&txq, pframe, CTL_TIMEOUT_ABSOLUTE, t+LOCKOUT_MS)) {
-        ctl_events_set_clear(&e_iob_err, EVT_IOE_ERR_SENDSTATUS, EVT_NONE);
+      if(!htbus_send(pframe)) {
+        (void)ctl_message_queue_post_nb(&codes, (void*)CODE_IOB_SENDSTATUS);
         ctl_memory_area_free(&frames, (void*)pframe); /**< _post failed! */
       }
-      ctl_timeout_wait(t+LOCKOUT_MS);
-    } else { ctl_events_set_clear(&e_iob_err, EVT_IOE_ERR_ALLOCSTATUS, EVT_NONE); }
+      ctl_timeout_wait(t0+(PAUSE_MS*2));
+    } else { (void)ctl_message_queue_post_nb(&codes, (void*)CODE_IOB_ALLOCSTATUS); }
 
     ctl_timeout_wait(t0+BASE_MS); /**< stay on track - unknown if anything */
   }                               /*   above has had to block              */
@@ -1306,14 +1451,17 @@ static __NO_RETURN void
 
   (void)arg;
   while(~0) {
-    CTL_TIME_t const t = ctl_get_current_time();
+    CTL_TIME_t const t0 = ctl_get_current_time();
     /*> TODO: EMIT AVI14 0x02C0 <*/
-    unsigned const v = (4095*sv)/100000; assert(v <= 4095);
+    unsigned const v = (4095*sine)/100000; assert(v <= 4095);
     canframe_t *pframe = (canframe_t*)ctl_memory_area_allocate(&frames);
     if(pframe) {
-      pframe->id = ID_IOA_AVI14;
-      pframe->extended = 0;
-      pframe->dlc = 8;
+      pframe->txhdr.Identifier = ID_IOA_AVI14;
+      pframe->txhdr.IdType = FDCAN_STANDARD_ID;
+      pframe->txhdr.TxFrameType = FDCAN_DATA_FRAME;
+      pframe->txhdr.BitRateSwitch = FDCAN_BRS_OFF;
+      pframe->txhdr.FDFormat = FDCAN_CLASSIC_CAN;
+      pframe->txhdr.DataLength = FDCAN_DLC_BYTES_8;
       pframe->data.as_uint8[0] = v>>8;
       pframe->data.as_uint8[1] = v;
       pframe->data.as_uint8[2] = v>>8;
@@ -1322,17 +1470,17 @@ static __NO_RETURN void
       pframe->data.as_uint8[5] = v;
       pframe->data.as_uint8[6] = v>>8;
       pframe->data.as_uint8[7] = v;
-      if(!ctl_message_queue_post(&txq, pframe, CTL_TIMEOUT_ABSOLUTE, t+LOCKOUT_MS)) {
-        ctl_events_set_clear(&e_ioa_err, EVT_IOE_ERR_SENDSTATUS, EVT_NONE);
+      if(!htbus_send(pframe)) {
+        (void)ctl_message_queue_post_nb(&codes, (void*)CODE_IOA_SENDAVI14);
         ctl_memory_area_free(&frames, (void*)pframe); /**< _post failed! */
       }
-      ctl_timeout_wait(t+LOCKOUT_MS);
+      ctl_timeout_wait(t0+LOCKOUT_MS);
     }
     CTL_EVENT_SET_t const evt =
       ctl_events_wait(CTL_EVENT_WAIT_ANY_EVENTS, &e_ioa,
                       EVT_IOE_AVI1 | EVT_IOE_AVI2 | EVT_IOE_AVI3 | EVT_IOE_AVI4,
-                      CTL_TIMEOUT_ABSOLUTE, t+BASE_MS); /**< stay on track */
-    (void)evt;  /**< knowing what unblocked us does not matter, time to tx */
+                      CTL_TIMEOUT_ABSOLUTE, t0+BASE_MS); /**< stay on track */
+    (void)evt;   /**< knowing what unblocked us does not matter, time to tx */
   }
 }
 
@@ -1349,15 +1497,18 @@ static __NO_RETURN void
 
   (void)arg;
   while(~0) {
-    unsigned const d = (1000*sv)/100000; assert(d <= 1000);
-    uint64_t const p = (131071-1)*(uint64_t)sv/100000+1; assert(p <= 131071); assert(p > 0);
-    CTL_TIME_t const t = ctl_get_current_time();
+    unsigned const d = (1000*sine)/100000; assert(d <= 1000);
+    uint64_t const p = (131071-1)*(uint64_t)sine/100000+1; assert(p <= 131071); assert(p > 0);
+    CTL_TIME_t const t0 = ctl_get_current_time();
     /*> TODO: EMIT DPI12 0x02C2 <*/
     canframe_t *pframe = (canframe_t*)ctl_memory_area_allocate(&frames);
     if(pframe) {
-      pframe->id = ID_IOA_DPI12;
-      pframe->extended = 0;
-      pframe->dlc = 8;
+      pframe->txhdr.Identifier = ID_IOA_DPI12;
+      pframe->txhdr.IdType = FDCAN_STANDARD_ID;
+      pframe->txhdr.TxFrameType = FDCAN_DATA_FRAME;
+      pframe->txhdr.BitRateSwitch = FDCAN_BRS_OFF;
+      pframe->txhdr.FDFormat = FDCAN_CLASSIC_CAN;
+      pframe->txhdr.DataLength = FDCAN_DLC_BYTES_8;
       pframe->data.as_uint8[0] = (d>>2);
       pframe->data.as_uint8[1] = (d<<6)|((p>>16)&0b1);
       pframe->data.as_uint8[2] = p>>8;
@@ -1366,17 +1517,17 @@ static __NO_RETURN void
       pframe->data.as_uint8[5] = (d<<6)|((p>>16)&0b1);
       pframe->data.as_uint8[6] = p>>8;
       pframe->data.as_uint8[7] = p;
-      if(!ctl_message_queue_post(&txq, pframe, CTL_TIMEOUT_ABSOLUTE, t+LOCKOUT_MS)) {
-        ctl_events_set_clear(&e_ioa_err, EVT_IOE_ERR_SENDSTATUS, EVT_NONE);
+      if(!htbus_send(pframe)) {
+        (void)ctl_message_queue_post_nb(&codes, (void*)CODE_IOA_SENDDPI12);
         ctl_memory_area_free(&frames, (void*)pframe); /**< _post failed! */
       }
-      ctl_timeout_wait(t+LOCKOUT_MS);
+      ctl_timeout_wait(t0+LOCKOUT_MS);
     }
     CTL_EVENT_SET_t const evt =
       ctl_events_wait(CTL_EVENT_WAIT_ANY_EVENTS, &e_ioa,
                       EVT_IOE_DPI1 | EVT_IOE_DPI2,
-                      CTL_TIMEOUT_ABSOLUTE, t+BASE_MS); /**< stay on track */
-    (void)evt;  /**< knowing what unblocked us does not matter, time to tx */
+                      CTL_TIMEOUT_ABSOLUTE, t0+BASE_MS); /**< stay on track */
+    (void)evt;   /**< knowing what unblocked us does not matter, time to tx */
   }
 }
 
@@ -1393,15 +1544,18 @@ static __NO_RETURN void
 
   (void)arg;
   while(~0) {
-    unsigned const d = (1000*sv)/100000; assert(d <= 1000);
-    uint64_t const p = (131071-1)*(uint64_t)sv/100000+1; assert(p <= 131071); assert(p > 0);
-    CTL_TIME_t const t = ctl_get_current_time();
+    unsigned const d = (1000*sine)/100000; assert(d <= 1000);
+    uint64_t const p = (131071-1)*(uint64_t)sine/100000+1; assert(p <= 131071); assert(p > 0);
+    CTL_TIME_t const t0 = ctl_get_current_time();
     /*> TODO: EMIT DPI34 0x02C4 <*/
     canframe_t *pframe = (canframe_t*)ctl_memory_area_allocate(&frames);
     if(pframe) {
-      pframe->id = ID_IOA_DPI34;
-      pframe->extended = 0;
-      pframe->dlc = 8;
+      pframe->txhdr.Identifier = ID_IOA_DPI34;
+      pframe->txhdr.IdType = FDCAN_STANDARD_ID;
+      pframe->txhdr.TxFrameType = FDCAN_DATA_FRAME;
+      pframe->txhdr.BitRateSwitch = FDCAN_BRS_OFF;
+      pframe->txhdr.FDFormat = FDCAN_CLASSIC_CAN;
+      pframe->txhdr.DataLength = FDCAN_DLC_BYTES_8;
       pframe->data.as_uint8[0] = (d>>2);
       pframe->data.as_uint8[1] = (d<<6)|((p>>16)&0b1);
       pframe->data.as_uint8[2] = p>>8;
@@ -1410,17 +1564,17 @@ static __NO_RETURN void
       pframe->data.as_uint8[5] = (d<<6)|((p>>16)&0b1);
       pframe->data.as_uint8[6] = p>>8;
       pframe->data.as_uint8[7] = p;
-      if(!ctl_message_queue_post(&txq, pframe, CTL_TIMEOUT_ABSOLUTE, t+LOCKOUT_MS)) {
-        ctl_events_set_clear(&e_ioa_err, EVT_IOE_ERR_SENDSTATUS, EVT_NONE);
+      if(!htbus_send(pframe)) {
+        (void)ctl_message_queue_post_nb(&codes, (void*)CODE_IOA_SENDDPI34);
         ctl_memory_area_free(&frames, (void*)pframe); /**< _post failed! */
       }
-      ctl_timeout_wait(t+LOCKOUT_MS);
+      ctl_timeout_wait(t0+LOCKOUT_MS);
     }
     CTL_EVENT_SET_t const evt =
       ctl_events_wait(CTL_EVENT_WAIT_ANY_EVENTS, &e_ioa,
                       EVT_IOE_DPI3 | EVT_IOE_DPI4,
-                      CTL_TIMEOUT_ABSOLUTE, t+BASE_MS); /**< stay on track */
-    (void)evt;  /**< knowing what unblocked us does not matter, time to tx */
+                      CTL_TIMEOUT_ABSOLUTE, t0+BASE_MS); /**< stay on track */
+    (void)evt;   /**< knowing what unblocked us does not matter, time to tx */
   }
 }
 
@@ -1437,14 +1591,17 @@ static __NO_RETURN void
 
   (void)arg;
   while(~0) {
-    CTL_TIME_t const t = ctl_get_current_time();
+    CTL_TIME_t const t0 = ctl_get_current_time();
     /*> TODO: EMIT AVI14 0x02C1 <*/
-    unsigned const v = (4095*sv)/100000; assert(v <= 4095);
+    unsigned const v = (4095*sine)/100000; assert(v <= 4095);
     canframe_t *pframe = (canframe_t*)ctl_memory_area_allocate(&frames);
     if(pframe) {
-      pframe->id = ID_IOB_AVI14;
-      pframe->extended = 0;
-      pframe->dlc = 8;
+      pframe->txhdr.Identifier = ID_IOB_AVI14;
+      pframe->txhdr.IdType = FDCAN_STANDARD_ID;
+      pframe->txhdr.TxFrameType = FDCAN_DATA_FRAME;
+      pframe->txhdr.BitRateSwitch = FDCAN_BRS_OFF;
+      pframe->txhdr.FDFormat = FDCAN_CLASSIC_CAN;
+      pframe->txhdr.DataLength = FDCAN_DLC_BYTES_8;
       pframe->data.as_uint8[0] = v>>8;
       pframe->data.as_uint8[1] = v;
       pframe->data.as_uint8[2] = v>>8;
@@ -1453,17 +1610,17 @@ static __NO_RETURN void
       pframe->data.as_uint8[5] = v;
       pframe->data.as_uint8[6] = v>>8;
       pframe->data.as_uint8[7] = v;
-      if(!ctl_message_queue_post(&txq, pframe, CTL_TIMEOUT_ABSOLUTE, t+LOCKOUT_MS)) {
-        ctl_events_set_clear(&e_iob_err, EVT_IOE_ERR_SENDSTATUS, EVT_NONE);
+      if(!htbus_send(pframe)) {
+        (void)ctl_message_queue_post_nb(&codes, (void*)CODE_IOB_SENDAVI14);
         ctl_memory_area_free(&frames, (void*)pframe); /**< _post failed! */
       }
-      ctl_timeout_wait(t+LOCKOUT_MS);
+      ctl_timeout_wait(t0+LOCKOUT_MS);
     }
     CTL_EVENT_SET_t const evt =
       ctl_events_wait(CTL_EVENT_WAIT_ANY_EVENTS, &e_iob,
                       EVT_IOE_AVI1 | EVT_IOE_AVI2 | EVT_IOE_AVI3 | EVT_IOE_AVI4,
-                      CTL_TIMEOUT_ABSOLUTE, t+BASE_MS); /**< stay on track */
-    (void)evt;  /**< knowing what unblocked us does not matter, time to tx */
+                      CTL_TIMEOUT_ABSOLUTE, t0+BASE_MS); /**< stay on track */
+    (void)evt;   /**< knowing what unblocked us does not matter, time to tx */
   }
 }
 
@@ -1480,15 +1637,18 @@ static __NO_RETURN void
 
   (void)arg;
   while(~0) {
-    unsigned const d = (1000*sv)/100000; assert(d <= 1000);
-    uint64_t const p = (131071-1)*(uint64_t)sv/100000+1; assert(p <= 131071); assert(p > 0);
-    CTL_TIME_t const t = ctl_get_current_time();
+    unsigned const d = (1000*sine)/100000; assert(d <= 1000);
+    uint64_t const p = (131071-1)*(uint64_t)sine/100000+1; assert(p <= 131071); assert(p > 0);
+    CTL_TIME_t const t0 = ctl_get_current_time();
     /*> TODO: EMIT DPI12 0x02C3 <*/
     canframe_t *pframe = (canframe_t*)ctl_memory_area_allocate(&frames);
     if(pframe) {
-      pframe->id = ID_IOB_DPI12;
-      pframe->extended = 0;
-      pframe->dlc = 8;
+      pframe->txhdr.Identifier = ID_IOB_DPI12;
+      pframe->txhdr.IdType = FDCAN_STANDARD_ID;
+      pframe->txhdr.TxFrameType = FDCAN_DATA_FRAME;
+      pframe->txhdr.BitRateSwitch = FDCAN_BRS_OFF;
+      pframe->txhdr.FDFormat = FDCAN_CLASSIC_CAN;
+      pframe->txhdr.DataLength = FDCAN_DLC_BYTES_8;
       pframe->data.as_uint8[0] = (d>>2);
       pframe->data.as_uint8[1] = (d<<6)|((p>>16)&0b1);
       pframe->data.as_uint8[2] = p>>8;
@@ -1497,17 +1657,17 @@ static __NO_RETURN void
       pframe->data.as_uint8[5] = (d<<6)|((p>>16)&0b1);
       pframe->data.as_uint8[6] = p>>8;
       pframe->data.as_uint8[7] = p;
-      if(!ctl_message_queue_post(&txq, pframe, CTL_TIMEOUT_ABSOLUTE, t+LOCKOUT_MS)) {
-        ctl_events_set_clear(&e_iob_err, EVT_IOE_ERR_SENDSTATUS, EVT_NONE);
+      if(!htbus_send(pframe)) {
+        (void)ctl_message_queue_post_nb(&codes, (void*)CODE_IOB_SENDDPI12);
         ctl_memory_area_free(&frames, (void*)pframe); /**< _post failed! */
       }
-      ctl_timeout_wait(t+LOCKOUT_MS);
+      ctl_timeout_wait(t0+LOCKOUT_MS);
     }
     CTL_EVENT_SET_t const evt =
       ctl_events_wait(CTL_EVENT_WAIT_ANY_EVENTS, &e_iob,
                       EVT_IOE_DPI1 | EVT_IOE_DPI2,
-                      CTL_TIMEOUT_ABSOLUTE, t+BASE_MS); /**< stay on track */
-    (void)evt;  /**< knowing what unblocked us does not matter, time to tx */
+                      CTL_TIMEOUT_ABSOLUTE, t0+BASE_MS); /**< stay on track */
+    (void)evt;   /**< knowing what unblocked us does not matter, time to tx */
   }
 }
 
@@ -1524,15 +1684,18 @@ static __NO_RETURN void
 
   (void)arg;
   while(~0) {
-    unsigned const d = (1000*sv)/100000; assert(d <= 1000);
-    uint64_t const p = (131071-1)*(uint64_t)sv/100000+1; assert(p <= 131071); assert(p > 0);
-    CTL_TIME_t const t = ctl_get_current_time();
+    unsigned const d = (1000*sine)/100000; assert(d <= 1000);
+    uint64_t const p = (131071-1)*(uint64_t)sine/100000+1; assert(p <= 131071); assert(p > 0);
+    CTL_TIME_t const t0 = ctl_get_current_time();
     /*> TODO: EMIT DPI34 0x02C5 <*/
     canframe_t *pframe = (canframe_t*)ctl_memory_area_allocate(&frames);
     if(pframe) {
-      pframe->id = ID_IOB_DPI34;
-      pframe->extended = 0;
-      pframe->dlc = 8;
+      pframe->txhdr.Identifier = ID_IOB_DPI34;
+      pframe->txhdr.IdType = FDCAN_STANDARD_ID;
+      pframe->txhdr.TxFrameType = FDCAN_DATA_FRAME;
+      pframe->txhdr.BitRateSwitch = FDCAN_BRS_OFF;
+      pframe->txhdr.FDFormat = FDCAN_CLASSIC_CAN;
+      pframe->txhdr.DataLength = FDCAN_DLC_BYTES_8;
       pframe->data.as_uint8[0] = (d>>2);
       pframe->data.as_uint8[1] = (d<<6)|((p>>16)&0b1);
       pframe->data.as_uint8[2] = p>>8;
@@ -1541,17 +1704,17 @@ static __NO_RETURN void
       pframe->data.as_uint8[5] = (d<<6)|((p>>16)&0b1);
       pframe->data.as_uint8[6] = p>>8;
       pframe->data.as_uint8[7] = p;
-      if(!ctl_message_queue_post(&txq, pframe, CTL_TIMEOUT_ABSOLUTE, t+LOCKOUT_MS)) {
-        ctl_events_set_clear(&e_iob_err, EVT_IOE_ERR_SENDSTATUS, EVT_NONE);
+      if(!htbus_send(pframe)) {
+        (void)ctl_message_queue_post_nb(&codes, (void*)CODE_IOB_SENDDPI34);
         ctl_memory_area_free(&frames, (void*)pframe); /**< _post failed! */
       }
-      ctl_timeout_wait(t+LOCKOUT_MS);
+      ctl_timeout_wait(t0+LOCKOUT_MS);
     }
     CTL_EVENT_SET_t const evt =
       ctl_events_wait(CTL_EVENT_WAIT_ANY_EVENTS, &e_iob,
                       EVT_IOE_DPI3 | EVT_IOE_DPI4,
-                      CTL_TIMEOUT_ABSOLUTE, t+BASE_MS); /**< stay on track */
-    (void)evt;  /**< knowing what unblocked us does not matter, time to tx */
+                      CTL_TIMEOUT_ABSOLUTE, t0+BASE_MS); /**< stay on track */
+    (void)evt;   /**< knowing what unblocked us does not matter, time to tx */
   }
 }
 
@@ -1568,83 +1731,92 @@ static __NO_RETURN void
          ID_PD16C_STATUS = 0x6E5,
          ID_PD16D_STATUS = 0x6ED,
          BASE_MS         = 100,   /* 10Hz base emit rate                */
-         LOCKOUT_MS      = 5 };   /* forced pause between status frames */
+         PAUSE_MS        = 5 };   /* forced pause between status frames */
+  static_assert((PAUSE_MS*4) < BASE_MS);
 
   (void)arg;
   while(~0) {
     CTL_TIME_t const t0 = ctl_get_current_time();
 
-    CTL_TIME_t t = t0;
     canframe_t *pframe = (canframe_t*)ctl_memory_area_allocate(&frames);
     if(pframe) {
-      pframe->id = ID_PD16A_STATUS;
-      pframe->extended = 0;
-      pframe->dlc = 5;
+      pframe->txhdr.Identifier = ID_PD16A_STATUS;
+      pframe->txhdr.IdType = FDCAN_STANDARD_ID;
+      pframe->txhdr.TxFrameType = FDCAN_DATA_FRAME;
+      pframe->txhdr.BitRateSwitch = FDCAN_BRS_OFF;
+      pframe->txhdr.FDFormat = FDCAN_CLASSIC_CAN;
+      pframe->txhdr.DataLength = FDCAN_DLC_BYTES_5;
       pframe->data.as_uint8[0] = (1<<4);
       pframe->data.as_uint8[1] = (2<<2)|(2<<0);
       pframe->data.as_uint8[2] = 22;
       pframe->data.as_uint8[3] = 22;
       pframe->data.as_uint8[4] = 222;
-      if(!ctl_message_queue_post(&txq, pframe, CTL_TIMEOUT_ABSOLUTE, t+LOCKOUT_MS)) {
-        ctl_events_set_clear(&e_pd16a_err, EVT_PD16_ERR_SENDSTATUS, EVT_NONE);
+      if(!htbus_send(pframe)) {
+        (void)ctl_message_queue_post_nb(&codes, (void*)CODE_PD16A_SENDSTATUS);
         ctl_memory_area_free(&frames, (void*)pframe); /**< _post failed! */
       }
-      ctl_timeout_wait(t+LOCKOUT_MS);
-    } else { ctl_events_set_clear(&e_pd16a_err, EVT_PD16_ERR_ALLOCSTATUS, EVT_NONE); }
+      ctl_timeout_wait(t0+(PAUSE_MS*1));
+    } else { (void)ctl_message_queue_post_nb(&codes, (void*)CODE_PD16A_ALLOCSTATUS); }
 
-    t = ctl_get_current_time();
     pframe = (canframe_t*)ctl_memory_area_allocate(&frames);
     if(pframe) {
-      pframe->id = ID_PD16B_STATUS;
-      pframe->extended = 0;
-      pframe->dlc = 5;
+      pframe->txhdr.Identifier = ID_PD16B_STATUS;
+      pframe->txhdr.IdType = FDCAN_STANDARD_ID;
+      pframe->txhdr.TxFrameType = FDCAN_DATA_FRAME;
+      pframe->txhdr.BitRateSwitch = FDCAN_BRS_OFF;
+      pframe->txhdr.FDFormat = FDCAN_CLASSIC_CAN;
+      pframe->txhdr.DataLength = FDCAN_DLC_BYTES_5;
       pframe->data.as_uint8[0] = (1<<4);
       pframe->data.as_uint8[1] = (2<<2)|(2<<0);
       pframe->data.as_uint8[2] = 22;
       pframe->data.as_uint8[3] = 22;
       pframe->data.as_uint8[4] = 222;
-      if(!ctl_message_queue_post(&txq, pframe, CTL_TIMEOUT_ABSOLUTE, t+LOCKOUT_MS)) {
-        ctl_events_set_clear(&e_pd16b_err, EVT_PD16_ERR_SENDSTATUS, EVT_NONE);
+      if(!htbus_send(pframe)) {
+        (void)ctl_message_queue_post_nb(&codes, (void*)CODE_PD16B_SENDSTATUS);
         ctl_memory_area_free(&frames, (void*)pframe); /**< _post failed! */
       }
-      ctl_timeout_wait(t+LOCKOUT_MS);
-    } else { ctl_events_set_clear(&e_pd16b_err, EVT_PD16_ERR_ALLOCSTATUS, EVT_NONE); }
+      ctl_timeout_wait(t0+(PAUSE_MS*2));
+    } else { (void)ctl_message_queue_post_nb(&codes, (void*)CODE_PD16B_ALLOCSTATUS); }
 
-    t = ctl_get_current_time();
     pframe = (canframe_t*)ctl_memory_area_allocate(&frames);
     if(pframe) {
-      pframe->id = ID_PD16C_STATUS;
-      pframe->extended = 0;
-      pframe->dlc = 5;
+      pframe->txhdr.Identifier = ID_PD16C_STATUS;
+      pframe->txhdr.IdType = FDCAN_STANDARD_ID;
+      pframe->txhdr.TxFrameType = FDCAN_DATA_FRAME;
+      pframe->txhdr.BitRateSwitch = FDCAN_BRS_OFF;
+      pframe->txhdr.FDFormat = FDCAN_CLASSIC_CAN;
+      pframe->txhdr.DataLength = FDCAN_DLC_BYTES_5;
       pframe->data.as_uint8[0] = (1<<4);
       pframe->data.as_uint8[1] = (2<<2)|(2<<0);
       pframe->data.as_uint8[2] = 22;
       pframe->data.as_uint8[3] = 22;
       pframe->data.as_uint8[4] = 222;
-      if(!ctl_message_queue_post(&txq, pframe, CTL_TIMEOUT_ABSOLUTE, t+LOCKOUT_MS)) {
-        ctl_events_set_clear(&e_pd16c_err, EVT_PD16_ERR_SENDSTATUS, EVT_NONE);
+      if(!htbus_send(pframe)) {
+        (void)ctl_message_queue_post_nb(&codes, (void*)CODE_PD16C_SENDSTATUS);
         ctl_memory_area_free(&frames, (void*)pframe); /**< _post failed! */
       }
-      ctl_timeout_wait(t+LOCKOUT_MS);
-    } else { ctl_events_set_clear(&e_pd16c_err, EVT_PD16_ERR_ALLOCSTATUS, EVT_NONE); }
+      ctl_timeout_wait(t0+(PAUSE_MS*3));
+    } else { (void)ctl_message_queue_post_nb(&codes, (void*)CODE_PD16C_ALLOCSTATUS); }
 
-    t = ctl_get_current_time();
     pframe = (canframe_t*)ctl_memory_area_allocate(&frames);
     if(pframe) {
-      pframe->id = ID_PD16D_STATUS;
-      pframe->extended = 0;
-      pframe->dlc = 5;
+      pframe->txhdr.Identifier = ID_PD16D_STATUS;
+      pframe->txhdr.IdType = FDCAN_STANDARD_ID;
+      pframe->txhdr.TxFrameType = FDCAN_DATA_FRAME;
+      pframe->txhdr.BitRateSwitch = FDCAN_BRS_OFF;
+      pframe->txhdr.FDFormat = FDCAN_CLASSIC_CAN;
+      pframe->txhdr.DataLength = FDCAN_DLC_BYTES_5;
       pframe->data.as_uint8[0] = (1<<4);
       pframe->data.as_uint8[1] = (2<<2)|(2<<0);
       pframe->data.as_uint8[2] = 22;
       pframe->data.as_uint8[3] = 22;
       pframe->data.as_uint8[4] = 222;
-      if(!ctl_message_queue_post(&txq, pframe, CTL_TIMEOUT_ABSOLUTE, t+LOCKOUT_MS)) {
-        ctl_events_set_clear(&e_pd16d_err, EVT_PD16_ERR_SENDSTATUS, EVT_NONE);
+      if(!htbus_send(pframe)) {
+        (void)ctl_message_queue_post_nb(&codes, (void*)CODE_PD16D_SENDSTATUS);
         ctl_memory_area_free(&frames, (void*)pframe); /**< _post failed! */
       }
-      ctl_timeout_wait(t+LOCKOUT_MS);
-    } else { ctl_events_set_clear(&e_pd16d_err, EVT_PD16_ERR_ALLOCSTATUS, EVT_NONE); }
+      ctl_timeout_wait(t0+(PAUSE_MS*4));
+    } else { (void)ctl_message_queue_post_nb(&codes, (void*)CODE_PD16D_ALLOCSTATUS); }
 
     ctl_timeout_wait(t0+BASE_MS); /**< stay on track - unknown if anything */
   }                               /*   above has had to block              */
@@ -1659,77 +1831,100 @@ static __NO_RETURN void
 {
   enum { ID_PD16_AVISPI = 0x6D3,
          BASE_MS    = 50,   /* 20Hz base emit rate             */
-         LOCKOUT_MS = 5 };  /* forced pause between mux frames */
-  static_assert((LOCKOUT_MS*8) < BASE_MS);
+         PAUSE_MS   = 5 };  /* forced pause between mux frames */
+  static_assert((PAUSE_MS*8) < BASE_MS);
 
   (void)arg;
   while(~0) {
-    unsigned const v = (5000*sv)/100000;
-    unsigned const d = (1000*sv)/100000;
-    CTL_TIME_t const t = ctl_get_current_time();
+    unsigned const v = (5000*sine)/100000;
+    unsigned const d = (1000*sine)/100000;
+    CTL_TIME_t const t0 = ctl_get_current_time();
 
     /*> TODO: EMIT AVI1 0x06D3 <*/
     canframe_t *pframe = (canframe_t*)ctl_memory_area_allocate(&frames);
     if(pframe) {
-      pframe->id = ID_PD16_AVISPI;
-      pframe->extended = 0;
-      pframe->dlc = 4;
+      pframe->txhdr.Identifier = ID_PD16_AVISPI;
+      pframe->txhdr.IdType = FDCAN_STANDARD_ID;
+      pframe->txhdr.TxFrameType = FDCAN_DATA_FRAME;
+      pframe->txhdr.BitRateSwitch = FDCAN_BRS_OFF;
+      pframe->txhdr.FDFormat = FDCAN_CLASSIC_CAN;
+      pframe->txhdr.DataLength = FDCAN_DLC_BYTES_4;
       pframe->data.as_uint8[0] = (4<<5)|(0);   /**< AVI1   */
       pframe->data.as_uint8[1] = (v>2500)?1:0; /**< on/off */
       pframe->data.as_uint8[2] = v>>8;         /**< v      */
       pframe->data.as_uint8[3] = v;
-      if(!ctl_message_queue_post(&txq, pframe, CTL_TIMEOUT_ABSOLUTE, t+(LOCKOUT_MS*1)))
+      if(!htbus_send(pframe)) {
+        (void)ctl_message_queue_post_nb(&codes, (void*)CODE_PD16A_SENDAVI1);
         ctl_memory_area_free(&frames, (void*)pframe); /**< _post failed! */
-      ctl_timeout_wait(t+(LOCKOUT_MS*1));
+      }
+      ctl_timeout_wait(t0+(PAUSE_MS*1));
     }
     /*> TODO: EMIT AVI2 0x06D3 <*/
     pframe = (canframe_t*)ctl_memory_area_allocate(&frames);
     if(pframe) {
-      pframe->id = ID_PD16_AVISPI;
-      pframe->extended = 0;
-      pframe->dlc = 4;
+      pframe->txhdr.Identifier = ID_PD16_AVISPI;
+      pframe->txhdr.IdType = FDCAN_STANDARD_ID;
+      pframe->txhdr.TxFrameType = FDCAN_DATA_FRAME;
+      pframe->txhdr.BitRateSwitch = FDCAN_BRS_OFF;
+      pframe->txhdr.FDFormat = FDCAN_CLASSIC_CAN;
+      pframe->txhdr.DataLength = FDCAN_DLC_BYTES_4;
       pframe->data.as_uint8[0] = (4<<5)|(1);   /**< AVI2   */
       pframe->data.as_uint8[1] = (v>2500)?1:0; /**< on/off */
       pframe->data.as_uint8[2] = v>>8;         /**< v      */
       pframe->data.as_uint8[3] = v;
-      if(!ctl_message_queue_post(&txq, pframe, CTL_TIMEOUT_ABSOLUTE, t+(LOCKOUT_MS*2)))
+      if(!htbus_send(pframe)) {
+        (void)ctl_message_queue_post_nb(&codes, (void*)CODE_PD16A_SENDAVI2);
         ctl_memory_area_free(&frames, (void*)pframe); /**< _post failed! */
-      ctl_timeout_wait(t+(LOCKOUT_MS*2));
+      }
+      ctl_timeout_wait(t0+(PAUSE_MS*2));
     }
     /*> TODO: EMIT AVI3 0x06D3 <*/
     pframe = (canframe_t*)ctl_memory_area_allocate(&frames);
     if(pframe) {
-      pframe->id = ID_PD16_AVISPI;
-      pframe->extended = 0;
-      pframe->dlc = 4;
+      pframe->txhdr.Identifier = ID_PD16_AVISPI;
+      pframe->txhdr.IdType = FDCAN_STANDARD_ID;
+      pframe->txhdr.TxFrameType = FDCAN_DATA_FRAME;
+      pframe->txhdr.BitRateSwitch = FDCAN_BRS_OFF;
+      pframe->txhdr.FDFormat = FDCAN_CLASSIC_CAN;
+      pframe->txhdr.DataLength = FDCAN_DLC_BYTES_4;
       pframe->data.as_uint8[0] = (4<<5)|(2);   /**< AVI3   */
       pframe->data.as_uint8[1] = (v>2500)?1:0; /**< on/off */
       pframe->data.as_uint8[2] = v>>8;         /**< v      */
       pframe->data.as_uint8[3] = v;
-      if(!ctl_message_queue_post(&txq, pframe, CTL_TIMEOUT_ABSOLUTE, t+(LOCKOUT_MS*3)))
+      if(!htbus_send(pframe)) {
+        (void)ctl_message_queue_post_nb(&codes, (void*)CODE_PD16A_SENDAVI3);
         ctl_memory_area_free(&frames, (void*)pframe); /**< _post failed! */
-      ctl_timeout_wait(t+(LOCKOUT_MS*3));
+      }
+      ctl_timeout_wait(t0+(PAUSE_MS*3));
     }
     /*> TODO: EMIT AVI4 0x06D3 <*/
     pframe = (canframe_t*)ctl_memory_area_allocate(&frames);
     if(pframe) {
-      pframe->id = ID_PD16_AVISPI;
-      pframe->extended = 0;
-      pframe->dlc = 4;
+      pframe->txhdr.Identifier = ID_PD16_AVISPI;
+      pframe->txhdr.IdType = FDCAN_STANDARD_ID;
+      pframe->txhdr.TxFrameType = FDCAN_DATA_FRAME;
+      pframe->txhdr.BitRateSwitch = FDCAN_BRS_OFF;
+      pframe->txhdr.FDFormat = FDCAN_CLASSIC_CAN;
+      pframe->txhdr.DataLength = FDCAN_DLC_BYTES_4;
       pframe->data.as_uint8[0] = (4<<5)|(3);   /**< AVI4   */
       pframe->data.as_uint8[1] = (v>2500)?1:0; /**< on/off */
       pframe->data.as_uint8[2] = v>>8;         /**< v      */
       pframe->data.as_uint8[3] = v;
-      if(!ctl_message_queue_post(&txq, pframe, CTL_TIMEOUT_ABSOLUTE, t+(LOCKOUT_MS*4)))
+      if(!htbus_send(pframe)) {
+        (void)ctl_message_queue_post_nb(&codes, (void*)CODE_PD16A_SENDAVI4);
         ctl_memory_area_free(&frames, (void*)pframe); /**< _post failed! */
-      ctl_timeout_wait(t+(LOCKOUT_MS*4));
+      }
+      ctl_timeout_wait(t0+(PAUSE_MS*4));
     }
     /*> TODO: EMIT SPI1 0x06D3 <*/
     pframe = (canframe_t*)ctl_memory_area_allocate(&frames);
     if(pframe) {
-      pframe->id = ID_PD16_AVISPI;
-      pframe->extended = 0;
-      pframe->dlc = 8;
+      pframe->txhdr.Identifier = ID_PD16_AVISPI;
+      pframe->txhdr.IdType = FDCAN_STANDARD_ID;
+      pframe->txhdr.TxFrameType = FDCAN_DATA_FRAME;
+      pframe->txhdr.BitRateSwitch = FDCAN_BRS_OFF;
+      pframe->txhdr.FDFormat = FDCAN_CLASSIC_CAN;
+      pframe->txhdr.DataLength = FDCAN_DLC_BYTES_8;
       pframe->data.as_uint8[0] = (3<<5)|(0);   /**< SPI1   */
       pframe->data.as_uint8[1] = (v>2500)?1:0; /**< on/off */
       pframe->data.as_uint8[2] = v>>8;         /**< v      */
@@ -1738,16 +1933,21 @@ static __NO_RETURN void
       pframe->data.as_uint8[5] = d;
       pframe->data.as_uint8[6] = d>>8;         /**< freq   */
       pframe->data.as_uint8[7] = d;
-      if(!ctl_message_queue_post(&txq, pframe, CTL_TIMEOUT_ABSOLUTE, t+(LOCKOUT_MS*5)))
+      if(!htbus_send(pframe)) {
+        (void)ctl_message_queue_post_nb(&codes, (void*)CODE_PD16A_SENDSPI1);
         ctl_memory_area_free(&frames, (void*)pframe); /**< _post failed! */
-      ctl_timeout_wait(t+(LOCKOUT_MS*5));
+      }
+      ctl_timeout_wait(t0+(PAUSE_MS*5));
     }
     /*> TODO: EMIT SPI2 0x06D3 <*/
     pframe = (canframe_t*)ctl_memory_area_allocate(&frames);
     if(pframe) {
-      pframe->id = ID_PD16_AVISPI;
-      pframe->extended = 0;
-      pframe->dlc = 8;
+      pframe->txhdr.Identifier = ID_PD16_AVISPI;
+      pframe->txhdr.IdType = FDCAN_STANDARD_ID;
+      pframe->txhdr.TxFrameType = FDCAN_DATA_FRAME;
+      pframe->txhdr.BitRateSwitch = FDCAN_BRS_OFF;
+      pframe->txhdr.FDFormat = FDCAN_CLASSIC_CAN;
+      pframe->txhdr.DataLength = FDCAN_DLC_BYTES_8;
       pframe->data.as_uint8[0] = (3<<5)|(1);   /**< SPI2   */
       pframe->data.as_uint8[1] = (v>2500)?1:0; /**< on/off */
       pframe->data.as_uint8[2] = v>>8;         /**< v      */
@@ -1756,16 +1956,21 @@ static __NO_RETURN void
       pframe->data.as_uint8[5] = d;
       pframe->data.as_uint8[6] = d>>8;         /**< freq   */
       pframe->data.as_uint8[7] = d;
-      if(!ctl_message_queue_post(&txq, pframe, CTL_TIMEOUT_ABSOLUTE, t+(LOCKOUT_MS*6)))
+      if(!htbus_send(pframe)) {
+        (void)ctl_message_queue_post_nb(&codes, (void*)CODE_PD16A_SENDSPI2);
         ctl_memory_area_free(&frames, (void*)pframe); /**< _post failed! */
-      ctl_timeout_wait(t+(LOCKOUT_MS*6));
+      }
+      ctl_timeout_wait(t0+(PAUSE_MS*6));
     }
     /*> TODO: EMIT SPI3 0x06D3 <*/
     pframe = (canframe_t*)ctl_memory_area_allocate(&frames);
     if(pframe) {
-      pframe->id = ID_PD16_AVISPI;
-      pframe->extended = 0;
-      pframe->dlc = 8;
+      pframe->txhdr.Identifier = ID_PD16_AVISPI;
+      pframe->txhdr.IdType = FDCAN_STANDARD_ID;
+      pframe->txhdr.TxFrameType = FDCAN_DATA_FRAME;
+      pframe->txhdr.BitRateSwitch = FDCAN_BRS_OFF;
+      pframe->txhdr.FDFormat = FDCAN_CLASSIC_CAN;
+      pframe->txhdr.DataLength = FDCAN_DLC_BYTES_8;
       pframe->data.as_uint8[0] = (3<<5)|(2);   /**< SPI3   */
       pframe->data.as_uint8[1] = (v>2500)?1:0; /**< on/off */
       pframe->data.as_uint8[2] = v>>8;         /**< v      */
@@ -1774,16 +1979,21 @@ static __NO_RETURN void
       pframe->data.as_uint8[5] = d;
       pframe->data.as_uint8[6] = d>>8;         /**< freq   */
       pframe->data.as_uint8[7] = d;
-      if(!ctl_message_queue_post(&txq, pframe, CTL_TIMEOUT_ABSOLUTE, t+(LOCKOUT_MS*7)))
+      if(!htbus_send(pframe)) {
+        (void)ctl_message_queue_post_nb(&codes, (void*)CODE_PD16A_SENDSPI3);
         ctl_memory_area_free(&frames, (void*)pframe); /**< _post failed! */
-      ctl_timeout_wait(t+(LOCKOUT_MS*7));
+      }
+      ctl_timeout_wait(t0+(PAUSE_MS*7));
     }
     /*> TODO: EMIT SPI4 0x06D3 <*/
     pframe = (canframe_t*)ctl_memory_area_allocate(&frames);
     if(pframe) {
-      pframe->id = ID_PD16_AVISPI;
-      pframe->extended = 0;
-      pframe->dlc = 8;
+      pframe->txhdr.Identifier = ID_PD16_AVISPI;
+      pframe->txhdr.IdType = FDCAN_STANDARD_ID;
+      pframe->txhdr.TxFrameType = FDCAN_DATA_FRAME;
+      pframe->txhdr.BitRateSwitch = FDCAN_BRS_OFF;
+      pframe->txhdr.FDFormat = FDCAN_CLASSIC_CAN;
+      pframe->txhdr.DataLength = FDCAN_DLC_BYTES_8;
       pframe->data.as_uint8[0] = (3<<5)|(3);   /**< SPI4   */
       pframe->data.as_uint8[1] = (v>2500)?1:0; /**< on/off */
       pframe->data.as_uint8[2] = v>>8;         /**< v      */
@@ -1792,17 +2002,18 @@ static __NO_RETURN void
       pframe->data.as_uint8[5] = d;
       pframe->data.as_uint8[6] = d>>8;         /**< freq   */
       pframe->data.as_uint8[7] = d;
-      if(!ctl_message_queue_post(&txq, pframe, CTL_TIMEOUT_ABSOLUTE, t+(LOCKOUT_MS*8)))
+      if(!htbus_send(pframe)) {
+        (void)ctl_message_queue_post_nb(&codes, (void*)CODE_PD16A_SENDSPI4);
         ctl_memory_area_free(&frames, (void*)pframe); /**< _post failed! */
-      ctl_timeout_wait(t+(LOCKOUT_MS*8));
+      }
+      ctl_timeout_wait(t0+(PAUSE_MS*8));
     }
 
-    assert(ctl_get_current_time() < (t+BASE_MS));
     CTL_EVENT_SET_t const evt =
       ctl_events_wait(CTL_EVENT_WAIT_ANY_EVENTS , &e_pd16a,
                       EVT_PD16_AVI1 | EVT_PD16_AVI2 | EVT_PD16_AVI3 | EVT_PD16_AVI4 |
                       EVT_PD16_SPI1 | EVT_PD16_SPI2 | EVT_PD16_SPI3 | EVT_PD16_SPI4,
-                      CTL_TIMEOUT_ABSOLUTE, t+BASE_MS);
+                      CTL_TIMEOUT_ABSOLUTE, t0+BASE_MS);
     (void)evt;  /**< knowing what unblocked us does not matter, time to tx */
   }
 }
@@ -1815,23 +2026,26 @@ static __NO_RETURN void
   task_pd16a_hco8hco25hbo_out(void *arg)
 {
   enum { ID_PD16_HCOHBO = 0x6D4,
-         BASE_MS    = 200,  /* 5Hz base emit rate              */
-         LOCKOUT_MS = 5 };  /* forced pause between mux frames */
-  static_assert((LOCKOUT_MS*16) < BASE_MS);
+         BASE_MS  = 200,  /* 5Hz base emit rate              */
+         PAUSE_MS = 5 };  /* forced pause between mux frames */
+  static_assert((PAUSE_MS*16) < BASE_MS);
 
   (void)arg;
   while(~0) {
-    unsigned const l = (100*sv)/100000;
-    unsigned const v = (16000*sv)/100000;
-    uint64_t const i = (50000*(uint64_t)sv)/100000;
-    CTL_TIME_t const t = ctl_get_current_time();
+    unsigned const l = (100*sine)/100000;
+    unsigned const v = (16000*sine)/100000;
+    uint64_t const i = (50000*(uint64_t)sine)/100000;
+    CTL_TIME_t const t0 = ctl_get_current_time();
 
     /*> TODO: EMIT HCO25/HCO8/HBO 0x06D4 <*/
     canframe_t *pframe = (canframe_t*)ctl_memory_area_allocate(&frames);
     if(pframe) {
-      pframe->id = ID_PD16_HCOHBO;
-      pframe->extended = 0;
-      pframe->dlc = 8;
+      pframe->txhdr.Identifier = ID_PD16_HCOHBO;
+      pframe->txhdr.IdType = FDCAN_STANDARD_ID;
+      pframe->txhdr.TxFrameType = FDCAN_DATA_FRAME;
+      pframe->txhdr.BitRateSwitch = FDCAN_BRS_OFF;
+      pframe->txhdr.FDFormat = FDCAN_CLASSIC_CAN;
+      pframe->txhdr.DataLength = FDCAN_DLC_BYTES_8;
       pframe->data.as_uint8[0] = (0<<5)|(0);  /**< HCO25-1     */
       pframe->data.as_uint8[1] = l;           /**< load        */
       pframe->data.as_uint8[2] = v>>8;        /**< v           */
@@ -1840,16 +2054,21 @@ static __NO_RETURN void
       pframe->data.as_uint8[5] = i;
       pframe->data.as_uint8[6] = i>>8;        /**< high-side i */
       pframe->data.as_uint8[7] = i;
-      if(!ctl_message_queue_post(&txq, pframe, CTL_TIMEOUT_ABSOLUTE, t+(LOCKOUT_MS*1)))
+      if(!htbus_send(pframe)) {
+        (void)ctl_message_queue_post_nb(&codes, (void*)CODE_PD16A_SENDHCO251);
         ctl_memory_area_free(&frames, (void*)pframe); /**< _post failed! */
-      ctl_timeout_wait(t+(LOCKOUT_MS*1));
+      }
+      ctl_timeout_wait(t0+(PAUSE_MS*1));
     }
     /*> TODO: EMIT HCO25/HCO8/HBO 0x06D4 <*/
     pframe = (canframe_t*)ctl_memory_area_allocate(&frames);
     if(pframe) {
-      pframe->id = ID_PD16_HCOHBO;
-      pframe->extended = 0;
-      pframe->dlc = 8;
+      pframe->txhdr.Identifier = ID_PD16_HCOHBO;
+      pframe->txhdr.IdType = FDCAN_STANDARD_ID;
+      pframe->txhdr.TxFrameType = FDCAN_DATA_FRAME;
+      pframe->txhdr.BitRateSwitch = FDCAN_BRS_OFF;
+      pframe->txhdr.FDFormat = FDCAN_CLASSIC_CAN;
+      pframe->txhdr.DataLength = FDCAN_DLC_BYTES_8;
       pframe->data.as_uint8[0] = (0<<5)|(1);  /**< HCO25-2     */
       pframe->data.as_uint8[1] = l;           /**< load        */
       pframe->data.as_uint8[2] = v>>8;        /**< v           */
@@ -1858,16 +2077,21 @@ static __NO_RETURN void
       pframe->data.as_uint8[5] = i;
       pframe->data.as_uint8[6] = i>>8;        /**< high-side i */
       pframe->data.as_uint8[7] = i;
-      if(!ctl_message_queue_post(&txq, pframe, CTL_TIMEOUT_ABSOLUTE, t+(LOCKOUT_MS*2)))
+      if(!htbus_send(pframe)) {
+        (void)ctl_message_queue_post_nb(&codes, (void*)CODE_PD16A_SENDHCO252);
         ctl_memory_area_free(&frames, (void*)pframe); /**< _post failed! */
-      ctl_timeout_wait(t+(LOCKOUT_MS*2));
+      }
+      ctl_timeout_wait(t0+(PAUSE_MS*2));
     }
     /*> TODO: EMIT HCO25/HCO8/HBO 0x06D4 <*/
     pframe = (canframe_t*)ctl_memory_area_allocate(&frames);
     if(pframe) {
-      pframe->id = ID_PD16_HCOHBO;
-      pframe->extended = 0;
-      pframe->dlc = 8;
+      pframe->txhdr.Identifier = ID_PD16_HCOHBO;
+      pframe->txhdr.IdType = FDCAN_STANDARD_ID;
+      pframe->txhdr.TxFrameType = FDCAN_DATA_FRAME;
+      pframe->txhdr.BitRateSwitch = FDCAN_BRS_OFF;
+      pframe->txhdr.FDFormat = FDCAN_CLASSIC_CAN;
+      pframe->txhdr.DataLength = FDCAN_DLC_BYTES_8;
       pframe->data.as_uint8[0] = (0<<5)|(2);  /**< HCO25-3     */
       pframe->data.as_uint8[1] = l;           /**< load        */
       pframe->data.as_uint8[2] = v>>8;        /**< v           */
@@ -1876,16 +2100,21 @@ static __NO_RETURN void
       pframe->data.as_uint8[5] = i;
       pframe->data.as_uint8[6] = i>>8;        /**< high-side i */
       pframe->data.as_uint8[7] = i;
-      if(!ctl_message_queue_post(&txq, pframe, CTL_TIMEOUT_ABSOLUTE, t+(LOCKOUT_MS*3)))
+      if(!htbus_send(pframe)) {
+        (void)ctl_message_queue_post_nb(&codes, (void*)CODE_PD16A_SENDHCO253);
         ctl_memory_area_free(&frames, (void*)pframe); /**< _post failed! */
-      ctl_timeout_wait(t+(LOCKOUT_MS*3));
+      }
+      ctl_timeout_wait(t0+(PAUSE_MS*3));
     }
     /*> TODO: EMIT HCO25/HCO8/HBO 0x06D4 <*/
     pframe = (canframe_t*)ctl_memory_area_allocate(&frames);
     if(pframe) {
-      pframe->id = ID_PD16_HCOHBO;
-      pframe->extended = 0;
-      pframe->dlc = 8;
+      pframe->txhdr.Identifier = ID_PD16_HCOHBO;
+      pframe->txhdr.IdType = FDCAN_STANDARD_ID;
+      pframe->txhdr.TxFrameType = FDCAN_DATA_FRAME;
+      pframe->txhdr.BitRateSwitch = FDCAN_BRS_OFF;
+      pframe->txhdr.FDFormat = FDCAN_CLASSIC_CAN;
+      pframe->txhdr.DataLength = FDCAN_DLC_BYTES_8;
       pframe->data.as_uint8[0] = (0<<5)|(3);  /**< HCO25-4     */
       pframe->data.as_uint8[1] = l;           /**< load        */
       pframe->data.as_uint8[2] = v>>8;        /**< v           */
@@ -1894,16 +2123,21 @@ static __NO_RETURN void
       pframe->data.as_uint8[5] = i;
       pframe->data.as_uint8[6] = i>>8;        /**< high-side i */
       pframe->data.as_uint8[7] = i;
-      if(!ctl_message_queue_post(&txq, pframe, CTL_TIMEOUT_ABSOLUTE, t+(LOCKOUT_MS*4)))
+      if(!htbus_send(pframe)) {
+        (void)ctl_message_queue_post_nb(&codes, (void*)CODE_PD16A_SENDHCO254);
         ctl_memory_area_free(&frames, (void*)pframe); /**< _post failed! */
-      ctl_timeout_wait(t+(LOCKOUT_MS*4));
+      }
+      ctl_timeout_wait(t0+(PAUSE_MS*4));
     }
     /*> TODO: EMIT HCO25/HCO8/HBO 0x06D4 <*/
     pframe = (canframe_t*)ctl_memory_area_allocate(&frames);
     if(pframe) {
-      pframe->id = ID_PD16_HCOHBO;
-      pframe->extended = 0;
-      pframe->dlc = 7;
+      pframe->txhdr.Identifier = ID_PD16_HCOHBO;
+      pframe->txhdr.IdType = FDCAN_STANDARD_ID;
+      pframe->txhdr.TxFrameType = FDCAN_DATA_FRAME;
+      pframe->txhdr.BitRateSwitch = FDCAN_BRS_OFF;
+      pframe->txhdr.FDFormat = FDCAN_CLASSIC_CAN;
+      pframe->txhdr.DataLength = FDCAN_DLC_BYTES_7;
       pframe->data.as_uint8[0] = (1<<5)|(0);  /**< HCO8-1 */
       pframe->data.as_uint8[1] = (4<<3)|(i>8000?2:0); /**< retry/status */
       pframe->data.as_uint8[2] = v>>8;        /**< v      */
@@ -1911,16 +2145,21 @@ static __NO_RETURN void
       pframe->data.as_uint8[4] = i>>8;        /**< i      */
       pframe->data.as_uint8[5] = i;
       pframe->data.as_uint8[6] = l;           /**< load   */
-      if(!ctl_message_queue_post(&txq, pframe, CTL_TIMEOUT_ABSOLUTE, t+(LOCKOUT_MS*5)))
+      if(!htbus_send(pframe)) {
+        (void)ctl_message_queue_post_nb(&codes, (void*)CODE_PD16A_SENDHCO81);
         ctl_memory_area_free(&frames, (void*)pframe); /**< _post failed! */
-      ctl_timeout_wait(t+(LOCKOUT_MS*5));
+      }
+      ctl_timeout_wait(t0+(PAUSE_MS*5));
     }
     /*> TODO: EMIT HCO25/HCO8/HBO 0x06D4 <*/
     pframe = (canframe_t*)ctl_memory_area_allocate(&frames);
     if(pframe) {
-      pframe->id = ID_PD16_HCOHBO;
-      pframe->extended = 0;
-      pframe->dlc = 7;
+      pframe->txhdr.Identifier = ID_PD16_HCOHBO;
+      pframe->txhdr.IdType = FDCAN_STANDARD_ID;
+      pframe->txhdr.TxFrameType = FDCAN_DATA_FRAME;
+      pframe->txhdr.BitRateSwitch = FDCAN_BRS_OFF;
+      pframe->txhdr.FDFormat = FDCAN_CLASSIC_CAN;
+      pframe->txhdr.DataLength = FDCAN_DLC_BYTES_7;
       pframe->data.as_uint8[0] = (1<<5)|(1);  /**< HCO8-2 */
       pframe->data.as_uint8[1] = (4<<3)|(i>8000?2:0); /**< retry/status */
       pframe->data.as_uint8[2] = v>>8;        /**< v      */
@@ -1928,16 +2167,21 @@ static __NO_RETURN void
       pframe->data.as_uint8[4] = i>>8;        /**< i      */
       pframe->data.as_uint8[5] = i;
       pframe->data.as_uint8[6] = l;           /**< load   */
-      if(!ctl_message_queue_post(&txq, pframe, CTL_TIMEOUT_ABSOLUTE, t+(LOCKOUT_MS*6)))
+      if(!htbus_send(pframe)) {
+        (void)ctl_message_queue_post_nb(&codes, (void*)CODE_PD16A_SENDHCO82);
         ctl_memory_area_free(&frames, (void*)pframe); /**< _post failed! */
-      ctl_timeout_wait(t+(LOCKOUT_MS*6));
+      }
+      ctl_timeout_wait(t0+(PAUSE_MS*6));
     }
     /*> TODO: EMIT HCO25/HCO8/HBO 0x06D4 <*/
     pframe = (canframe_t*)ctl_memory_area_allocate(&frames);
     if(pframe) {
-      pframe->id = ID_PD16_HCOHBO;
-      pframe->extended = 0;
-      pframe->dlc = 7;
+      pframe->txhdr.Identifier = ID_PD16_HCOHBO;
+      pframe->txhdr.IdType = FDCAN_STANDARD_ID;
+      pframe->txhdr.TxFrameType = FDCAN_DATA_FRAME;
+      pframe->txhdr.BitRateSwitch = FDCAN_BRS_OFF;
+      pframe->txhdr.FDFormat = FDCAN_CLASSIC_CAN;
+      pframe->txhdr.DataLength = FDCAN_DLC_BYTES_7;
       pframe->data.as_uint8[0] = (1<<5)|(2);  /**< HCO8-3 */
       pframe->data.as_uint8[1] = (4<<3)|(i>8000?2:0); /**< retry/status */
       pframe->data.as_uint8[2] = v>>8;        /**< v      */
@@ -1945,16 +2189,21 @@ static __NO_RETURN void
       pframe->data.as_uint8[4] = i>>8;        /**< i      */
       pframe->data.as_uint8[5] = i;
       pframe->data.as_uint8[6] = l;           /**< load   */
-      if(!ctl_message_queue_post(&txq, pframe, CTL_TIMEOUT_ABSOLUTE, t+(LOCKOUT_MS*7)))
+      if(!htbus_send(pframe)) {
+        (void)ctl_message_queue_post_nb(&codes, (void*)CODE_PD16A_SENDHCO83);
         ctl_memory_area_free(&frames, (void*)pframe); /**< _post failed! */
-      ctl_timeout_wait(t+(LOCKOUT_MS*7));
+      }
+      ctl_timeout_wait(t0+(PAUSE_MS*7));
     }
     /*> TODO: EMIT HCO25/HCO8/HBO 0x06D4 <*/
     pframe = (canframe_t*)ctl_memory_area_allocate(&frames);
     if(pframe) {
-      pframe->id = ID_PD16_HCOHBO;
-      pframe->extended = 0;
-      pframe->dlc = 7;
+      pframe->txhdr.Identifier = ID_PD16_HCOHBO;
+      pframe->txhdr.IdType = FDCAN_STANDARD_ID;
+      pframe->txhdr.TxFrameType = FDCAN_DATA_FRAME;
+      pframe->txhdr.BitRateSwitch = FDCAN_BRS_OFF;
+      pframe->txhdr.FDFormat = FDCAN_CLASSIC_CAN;
+      pframe->txhdr.DataLength = FDCAN_DLC_BYTES_7;
       pframe->data.as_uint8[0] = (1<<5)|(3);  /**< HCO8-4 */
       pframe->data.as_uint8[1] = (4<<3)|(i>8000?2:0); /**< retry/status */
       pframe->data.as_uint8[2] = v>>8;        /**< v      */
@@ -1962,16 +2211,21 @@ static __NO_RETURN void
       pframe->data.as_uint8[4] = i>>8;        /**< i      */
       pframe->data.as_uint8[5] = i;
       pframe->data.as_uint8[6] = l;           /**< load   */
-      if(!ctl_message_queue_post(&txq, pframe, CTL_TIMEOUT_ABSOLUTE, t+(LOCKOUT_MS*8)))
+      if(!htbus_send(pframe)) {
+        (void)ctl_message_queue_post_nb(&codes, (void*)CODE_PD16A_SENDHCO84);
         ctl_memory_area_free(&frames, (void*)pframe); /**< _post failed! */
-      ctl_timeout_wait(t+(LOCKOUT_MS*8));
+      }
+      ctl_timeout_wait(t0+(PAUSE_MS*8));
     }
     /*> TODO: EMIT HCO25/HCO8/HBO 0x06D4 <*/
     pframe = (canframe_t*)ctl_memory_area_allocate(&frames);
     if(pframe) {
-      pframe->id = ID_PD16_HCOHBO;
-      pframe->extended = 0;
-      pframe->dlc = 7;
+      pframe->txhdr.Identifier = ID_PD16_HCOHBO;
+      pframe->txhdr.IdType = FDCAN_STANDARD_ID;
+      pframe->txhdr.TxFrameType = FDCAN_DATA_FRAME;
+      pframe->txhdr.BitRateSwitch = FDCAN_BRS_OFF;
+      pframe->txhdr.FDFormat = FDCAN_CLASSIC_CAN;
+      pframe->txhdr.DataLength = FDCAN_DLC_BYTES_7;
       pframe->data.as_uint8[0] = (1<<5)|(4);  /**< HCO8-5 */
       pframe->data.as_uint8[1] = (4<<3)|(i>8000?2:0); /**< retry/status */
       pframe->data.as_uint8[2] = v>>8;        /**< v      */
@@ -1979,16 +2233,21 @@ static __NO_RETURN void
       pframe->data.as_uint8[4] = i>>8;        /**< i      */
       pframe->data.as_uint8[5] = i;
       pframe->data.as_uint8[6] = l;           /**< load   */
-      if(!ctl_message_queue_post(&txq, pframe, CTL_TIMEOUT_ABSOLUTE, t+(LOCKOUT_MS*9)))
+      if(!htbus_send(pframe)) {
+        (void)ctl_message_queue_post_nb(&codes, (void*)CODE_PD16A_SENDHCO85);
         ctl_memory_area_free(&frames, (void*)pframe); /**< _post failed! */
-      ctl_timeout_wait(t+(LOCKOUT_MS*9));
+      }
+      ctl_timeout_wait(t0+(PAUSE_MS*9));
     }
     /*> TODO: EMIT HCO25/HCO8/HBO 0x06D4 <*/
     pframe = (canframe_t*)ctl_memory_area_allocate(&frames);
     if(pframe) {
-      pframe->id = ID_PD16_HCOHBO;
-      pframe->extended = 0;
-      pframe->dlc = 7;
+      pframe->txhdr.Identifier = ID_PD16_HCOHBO;
+      pframe->txhdr.IdType = FDCAN_STANDARD_ID;
+      pframe->txhdr.TxFrameType = FDCAN_DATA_FRAME;
+      pframe->txhdr.BitRateSwitch = FDCAN_BRS_OFF;
+      pframe->txhdr.FDFormat = FDCAN_CLASSIC_CAN;
+      pframe->txhdr.DataLength = FDCAN_DLC_BYTES_7;
       pframe->data.as_uint8[0] = (1<<5)|(5);  /**< HCO8-6 */
       pframe->data.as_uint8[1] = (4<<3)|(i>8000?2:0); /**< retry/status */
       pframe->data.as_uint8[2] = v>>8;        /**< v      */
@@ -1996,16 +2255,21 @@ static __NO_RETURN void
       pframe->data.as_uint8[4] = i>>8;        /**< i      */
       pframe->data.as_uint8[5] = i;
       pframe->data.as_uint8[6] = l;           /**< load   */
-      if(!ctl_message_queue_post(&txq, pframe, CTL_TIMEOUT_ABSOLUTE, t+(LOCKOUT_MS*10)))
+      if(!htbus_send(pframe)) {
+        (void)ctl_message_queue_post_nb(&codes, (void*)CODE_PD16A_SENDHCO86);
         ctl_memory_area_free(&frames, (void*)pframe); /**< _post failed! */
-      ctl_timeout_wait(t+(LOCKOUT_MS*10));
+      }
+      ctl_timeout_wait(t0+(PAUSE_MS*10));
     }
     /*> TODO: EMIT HCO25/HCO8/HBO 0x06D4 <*/
     pframe = (canframe_t*)ctl_memory_area_allocate(&frames);
     if(pframe) {
-      pframe->id = ID_PD16_HCOHBO;
-      pframe->extended = 0;
-      pframe->dlc = 7;
+      pframe->txhdr.Identifier = ID_PD16_HCOHBO;
+      pframe->txhdr.IdType = FDCAN_STANDARD_ID;
+      pframe->txhdr.TxFrameType = FDCAN_DATA_FRAME;
+      pframe->txhdr.BitRateSwitch = FDCAN_BRS_OFF;
+      pframe->txhdr.FDFormat = FDCAN_CLASSIC_CAN;
+      pframe->txhdr.DataLength = FDCAN_DLC_BYTES_7;
       pframe->data.as_uint8[0] = (1<<5)|(6);  /**< HCO8-7 */
       pframe->data.as_uint8[1] = (4<<3)|(i>8000?2:0); /**< retry/status */
       pframe->data.as_uint8[2] = v>>8;        /**< v      */
@@ -2013,16 +2277,21 @@ static __NO_RETURN void
       pframe->data.as_uint8[4] = i>>8;        /**< i      */
       pframe->data.as_uint8[5] = i;
       pframe->data.as_uint8[6] = l;           /**< load   */
-      if(!ctl_message_queue_post(&txq, pframe, CTL_TIMEOUT_ABSOLUTE, t+(LOCKOUT_MS*11)))
+      if(!htbus_send(pframe)) {
+        (void)ctl_message_queue_post_nb(&codes, (void*)CODE_PD16A_SENDHCO87);
         ctl_memory_area_free(&frames, (void*)pframe); /**< _post failed! */
-      ctl_timeout_wait(t+(LOCKOUT_MS*11));
+      }
+      ctl_timeout_wait(t0+(PAUSE_MS*11));
     }
     /*> TODO: EMIT HCO25/HCO8/HBO 0x06D4 <*/
     pframe = (canframe_t*)ctl_memory_area_allocate(&frames);
     if(pframe) {
-      pframe->id = ID_PD16_HCOHBO;
-      pframe->extended = 0;
-      pframe->dlc = 7;
+      pframe->txhdr.Identifier = ID_PD16_HCOHBO;
+      pframe->txhdr.IdType = FDCAN_STANDARD_ID;
+      pframe->txhdr.TxFrameType = FDCAN_DATA_FRAME;
+      pframe->txhdr.BitRateSwitch = FDCAN_BRS_OFF;
+      pframe->txhdr.FDFormat = FDCAN_CLASSIC_CAN;
+      pframe->txhdr.DataLength = FDCAN_DLC_BYTES_7;
       pframe->data.as_uint8[0] = (1<<5)|(7);  /**< HCO8-8 */
       pframe->data.as_uint8[1] = (4<<3)|(i>8000?2:0); /**< retry/status */
       pframe->data.as_uint8[2] = v>>8;        /**< v      */
@@ -2030,16 +2299,21 @@ static __NO_RETURN void
       pframe->data.as_uint8[4] = i>>8;        /**< i      */
       pframe->data.as_uint8[5] = i;
       pframe->data.as_uint8[6] = l;           /**< load   */
-      if(!ctl_message_queue_post(&txq, pframe, CTL_TIMEOUT_ABSOLUTE, t+(LOCKOUT_MS*12)))
+      if(!htbus_send(pframe)) {
+        (void)ctl_message_queue_post_nb(&codes, (void*)CODE_PD16A_SENDHCO88);
         ctl_memory_area_free(&frames, (void*)pframe); /**< _post failed! */
-      ctl_timeout_wait(t+(LOCKOUT_MS*12));
+      }
+      ctl_timeout_wait(t0+(PAUSE_MS*12));
     }
     /*> TODO: EMIT HCO25/HCO8/HBO 0x06D4 <*/
     pframe = (canframe_t*)ctl_memory_area_allocate(&frames);
     if(pframe) {
-      pframe->id = ID_PD16_HCOHBO;
-      pframe->extended = 0;
-      pframe->dlc = 7;
+      pframe->txhdr.Identifier = ID_PD16_HCOHBO;
+      pframe->txhdr.IdType = FDCAN_STANDARD_ID;
+      pframe->txhdr.TxFrameType = FDCAN_DATA_FRAME;
+      pframe->txhdr.BitRateSwitch = FDCAN_BRS_OFF;
+      pframe->txhdr.FDFormat = FDCAN_CLASSIC_CAN;
+      pframe->txhdr.DataLength = FDCAN_DLC_BYTES_7;
       pframe->data.as_uint8[0] = (1<<5)|(8);  /**< HCO8-9 */
       pframe->data.as_uint8[1] = (4<<3)|(i>8000?2:0); /**< retry/status */
       pframe->data.as_uint8[2] = v>>8;        /**< v      */
@@ -2047,16 +2321,21 @@ static __NO_RETURN void
       pframe->data.as_uint8[4] = i>>8;        /**< i      */
       pframe->data.as_uint8[5] = i;
       pframe->data.as_uint8[6] = l;           /**< load   */
-      if(!ctl_message_queue_post(&txq, pframe, CTL_TIMEOUT_ABSOLUTE, t+(LOCKOUT_MS*13)))
+      if(!htbus_send(pframe)) {
+        (void)ctl_message_queue_post_nb(&codes, (void*)CODE_PD16A_SENDHCO89);
         ctl_memory_area_free(&frames, (void*)pframe); /**< _post failed! */
-      ctl_timeout_wait(t+(LOCKOUT_MS*13));
+      }
+      ctl_timeout_wait(t0+(PAUSE_MS*13));
     }
     /*> TODO: EMIT HCO25/HCO8/HBO 0x06D4 <*/
     pframe = (canframe_t*)ctl_memory_area_allocate(&frames);
     if(pframe) {
-      pframe->id = ID_PD16_HCOHBO;
-      pframe->extended = 0;
-      pframe->dlc = 7;
+      pframe->txhdr.Identifier = ID_PD16_HCOHBO;
+      pframe->txhdr.IdType = FDCAN_STANDARD_ID;
+      pframe->txhdr.TxFrameType = FDCAN_DATA_FRAME;
+      pframe->txhdr.BitRateSwitch = FDCAN_BRS_OFF;
+      pframe->txhdr.FDFormat = FDCAN_CLASSIC_CAN;
+      pframe->txhdr.DataLength = FDCAN_DLC_BYTES_7;
       pframe->data.as_uint8[0] = (1<<5)|(9);  /**< HCO8-10 */
       pframe->data.as_uint8[1] = (4<<3)|(i>8000?2:0); /**< retry/status */
       pframe->data.as_uint8[2] = v>>8;        /**< v       */
@@ -2064,16 +2343,21 @@ static __NO_RETURN void
       pframe->data.as_uint8[4] = i>>8;        /**< i       */
       pframe->data.as_uint8[5] = i;
       pframe->data.as_uint8[6] = l;           /**< load    */
-      if(!ctl_message_queue_post(&txq, pframe, CTL_TIMEOUT_ABSOLUTE, t+(LOCKOUT_MS*14)))
+      if(!htbus_send(pframe)) {
+        (void)ctl_message_queue_post_nb(&codes, (void*)CODE_PD16A_SENDHCO810);
         ctl_memory_area_free(&frames, (void*)pframe); /**< _post failed! */
-      ctl_timeout_wait(t+(LOCKOUT_MS*14));
+      }
+      ctl_timeout_wait(t0+(PAUSE_MS*14));
     }
     /*> TODO: EMIT HCO25/HCO8/HBO 0x06D4 <*/
     pframe = (canframe_t*)ctl_memory_area_allocate(&frames);
     if(pframe) {
-      pframe->id = ID_PD16_HCOHBO;
-      pframe->extended = 0;
-      pframe->dlc = 8;
+      pframe->txhdr.Identifier = ID_PD16_HCOHBO;
+      pframe->txhdr.IdType = FDCAN_STANDARD_ID;
+      pframe->txhdr.TxFrameType = FDCAN_DATA_FRAME;
+      pframe->txhdr.BitRateSwitch = FDCAN_BRS_OFF;
+      pframe->txhdr.FDFormat = FDCAN_CLASSIC_CAN;
+      pframe->txhdr.DataLength = FDCAN_DLC_BYTES_8;
       pframe->data.as_uint8[0] = (2<<5)|(0);  /**< HBO1        */
       pframe->data.as_uint8[1] = (10<<3)|(i>3000?2:0); /**< retry/status */
       pframe->data.as_uint8[2] = v>>8;        /**< v           */
@@ -2082,16 +2366,21 @@ static __NO_RETURN void
       pframe->data.as_uint8[5] = i;
       pframe->data.as_uint8[6] = i>>8;        /**< high-side i */
       pframe->data.as_uint8[7] = i;
-      if(!ctl_message_queue_post(&txq, pframe, CTL_TIMEOUT_ABSOLUTE, t+(LOCKOUT_MS*15)))
+      if(!htbus_send(pframe)) {
+        (void)ctl_message_queue_post_nb(&codes, (void*)CODE_PD16A_SENDHBO1);
         ctl_memory_area_free(&frames, (void*)pframe); /**< _post failed! */
-      ctl_timeout_wait(t+(LOCKOUT_MS*15));
+      }
+      ctl_timeout_wait(t0+(PAUSE_MS*15));
     }
     /*> TODO: EMIT HCO25/HCO8/HBO 0x06D4 <*/
     pframe = (canframe_t*)ctl_memory_area_allocate(&frames);
     if(pframe) {
-      pframe->id = ID_PD16_HCOHBO;
-      pframe->extended = 0;
-      pframe->dlc = 8;
+      pframe->txhdr.Identifier = ID_PD16_HCOHBO;
+      pframe->txhdr.IdType = FDCAN_STANDARD_ID;
+      pframe->txhdr.TxFrameType = FDCAN_DATA_FRAME;
+      pframe->txhdr.BitRateSwitch = FDCAN_BRS_OFF;
+      pframe->txhdr.FDFormat = FDCAN_CLASSIC_CAN;
+      pframe->txhdr.DataLength = FDCAN_DLC_BYTES_8;
       pframe->data.as_uint8[0] = (2<<5)|(1);  /**< HBO2        */
       pframe->data.as_uint8[1] = (10<<3)|(i>3000?2:0); /**< retry/status */
       pframe->data.as_uint8[2] = v>>8;        /**< v           */
@@ -2100,19 +2389,20 @@ static __NO_RETURN void
       pframe->data.as_uint8[5] = i;
       pframe->data.as_uint8[6] = i>>8;        /**< high-side i */
       pframe->data.as_uint8[7] = i;
-      if(!ctl_message_queue_post(&txq, pframe, CTL_TIMEOUT_ABSOLUTE, t+(LOCKOUT_MS*16)))
+      if(!htbus_send(pframe)) {
+        (void)ctl_message_queue_post_nb(&codes, (void*)CODE_PD16A_SENDHBO2);
         ctl_memory_area_free(&frames, (void*)pframe); /**< _post failed! */
-      ctl_timeout_wait(t+(LOCKOUT_MS*16));
+      }
+      ctl_timeout_wait(t0+(PAUSE_MS*16));
     }
 
-    assert(ctl_get_current_time() < (t+BASE_MS));
     CTL_EVENT_SET_t const evt =
       ctl_events_wait(CTL_EVENT_WAIT_ANY_EVENTS , &e_pd16a,
                       EVT_PD16_HCO25_1 | EVT_PD16_HCO25_2 | EVT_PD16_HCO25_3 | EVT_PD16_HCO25_4 |
                       EVT_PD16_HCO8_1  | EVT_PD16_HCO8_2  | EVT_PD16_HCO8_3  | EVT_PD16_HCO8_4  |
                       EVT_PD16_HCO8_5  | EVT_PD16_HCO8_6  | EVT_PD16_HCO8_7  | EVT_PD16_HCO8_8  |
                       EVT_PD16_HCO8_9  | EVT_PD16_HCO8_10 | EVT_PD16_HBO_1   | EVT_PD16_HBO_2,
-                      CTL_TIMEOUT_ABSOLUTE, t+BASE_MS);
+                      CTL_TIMEOUT_ABSOLUTE, t0+BASE_MS);
     (void)evt;  /**< knowing what unblocked us does not matter, time to tx all (for now) */
   }
 }
@@ -2125,24 +2415,27 @@ static __NO_RETURN void
   task_pd16a_diag_out(void *arg)
 {
   enum { ID_PD16_DIAG = 0x6D6,
-         BASE_MS    = 500,  /* 2Hz base emit rate              */
-         LOCKOUT_MS = 5 };  /* forced pause between mux frames */
-  static_assert((LOCKOUT_MS*6) < BASE_MS);
+         BASE_MS  = 500,  /* 2Hz base emit rate              */
+         PAUSE_MS = 5 };  /* forced pause between mux frames */
+  static_assert((PAUSE_MS*6) < BASE_MS);
 
   (void)arg;
   while(~0) {
-    unsigned const c = (255*sv)/100000;
-    unsigned const l = (100*sv)/100000;
-    unsigned const v = (16000*sv)/100000;
-    uint64_t const i = (50000*(uint64_t)sv)/100000;
-    CTL_TIME_t const t = ctl_get_current_time();
+    unsigned const c = (255*sine)/100000;
+    unsigned const l = (100*sine)/100000;
+    unsigned const v = (16000*sine)/100000;
+    uint64_t const i = (50000*(uint64_t)sine)/100000;
+    CTL_TIME_t const t0 = ctl_get_current_time();
 
     /*> TODO: EMIT DIAG 0x06D6 <*/
     canframe_t *pframe = (canframe_t*)ctl_memory_area_allocate(&frames);
     if(pframe) {
-      pframe->id = ID_PD16_DIAG;
-      pframe->extended = 0;
-      pframe->dlc = 8;
+      pframe->txhdr.Identifier = ID_PD16_DIAG;
+      pframe->txhdr.IdType = FDCAN_STANDARD_ID;
+      pframe->txhdr.TxFrameType = FDCAN_DATA_FRAME;
+      pframe->txhdr.BitRateSwitch = FDCAN_BRS_OFF;
+      pframe->txhdr.FDFormat = FDCAN_CLASSIC_CAN;
+      pframe->txhdr.DataLength = FDCAN_DLC_BYTES_8;
       pframe->data.as_uint8[0] = 0;           /**< DIAG0       */
       pframe->data.as_uint8[1] = (l>50?1:0);  /**< ign sw      */
       pframe->data.as_uint8[2] = v>>8;        /**< main rail v */
@@ -2151,16 +2444,21 @@ static __NO_RETURN void
       pframe->data.as_uint8[5] = v;
       pframe->data.as_uint8[6] = v>>8;        /**< ecr v       */
       pframe->data.as_uint8[7] = v;
-      if(!ctl_message_queue_post(&txq, pframe, CTL_TIMEOUT_ABSOLUTE, t+(LOCKOUT_MS*1)))
+      if(!htbus_send(pframe)) {
+        (void)ctl_message_queue_post_nb(&codes, (void*)CODE_PD16A_SENDDIAG0);
         ctl_memory_area_free(&frames, (void*)pframe); /**< _post failed! */
-      ctl_timeout_wait(t+(LOCKOUT_MS*1));
+      }
+      ctl_timeout_wait(t0+(PAUSE_MS*1));
     }
     /*> TODO: EMIT DIAG 0x06D6 <*/
     pframe = (canframe_t*)ctl_memory_area_allocate(&frames);
     if(pframe) {
-      pframe->id = ID_PD16_DIAG;
-      pframe->extended = 0;
-      pframe->dlc = 8;
+      pframe->txhdr.Identifier = ID_PD16_DIAG;
+      pframe->txhdr.IdType = FDCAN_STANDARD_ID;
+      pframe->txhdr.TxFrameType = FDCAN_DATA_FRAME;
+      pframe->txhdr.BitRateSwitch = FDCAN_BRS_OFF;
+      pframe->txhdr.FDFormat = FDCAN_CLASSIC_CAN;
+      pframe->txhdr.DataLength = FDCAN_DLC_BYTES_8;
       pframe->data.as_uint8[0] = 1;             /**< DIAG1       */
       pframe->data.as_uint8[1] = 0;             /**< unspecified */
       pframe->data.as_uint8[2] = (v+10000)>>8;  /**< boost v     */
@@ -2169,16 +2467,21 @@ static __NO_RETURN void
       pframe->data.as_uint8[5] = v;
       pframe->data.as_uint8[6] = i>>8;          /**< ecr plug i  */
       pframe->data.as_uint8[7] = i;
-      if(!ctl_message_queue_post(&txq, pframe, CTL_TIMEOUT_ABSOLUTE, t+(LOCKOUT_MS*2)))
+      if(!htbus_send(pframe)) {
+        (void)ctl_message_queue_post_nb(&codes, (void*)CODE_PD16A_SENDDIAG1);
         ctl_memory_area_free(&frames, (void*)pframe); /**< _post failed! */
-      ctl_timeout_wait(t+(LOCKOUT_MS*2));
+      }
+      ctl_timeout_wait(t0+(PAUSE_MS*2));
     }
     /*> TODO: EMIT DIAG 0x06D6 <*/
     pframe = (canframe_t*)ctl_memory_area_allocate(&frames);
     if(pframe) {
-      pframe->id = ID_PD16_DIAG;
-      pframe->extended = 0;
-      pframe->dlc = 8;
+      pframe->txhdr.Identifier = ID_PD16_DIAG;
+      pframe->txhdr.IdType = FDCAN_STANDARD_ID;
+      pframe->txhdr.TxFrameType = FDCAN_DATA_FRAME;
+      pframe->txhdr.BitRateSwitch = FDCAN_BRS_OFF;
+      pframe->txhdr.FDFormat = FDCAN_CLASSIC_CAN;
+      pframe->txhdr.DataLength = FDCAN_DLC_BYTES_8;
       pframe->data.as_uint8[0] = 2;        /**< DIAG2        */
       pframe->data.as_uint8[1] = 0;        /**< unspecified  */
       pframe->data.as_uint8[2] = 3300>>8;  /**< UVLO v       */
@@ -2187,16 +2490,21 @@ static __NO_RETURN void
       pframe->data.as_uint8[5] = v;
       pframe->data.as_uint8[6] = v>>8;     /**< VDD v        */
       pframe->data.as_uint8[7] = v;
-      if(!ctl_message_queue_post(&txq, pframe, CTL_TIMEOUT_ABSOLUTE, t+(LOCKOUT_MS*3)))
+      if(!htbus_send(pframe)) {
+        (void)ctl_message_queue_post_nb(&codes, (void*)CODE_PD16A_SENDDIAG2);
         ctl_memory_area_free(&frames, (void*)pframe); /**< _post failed! */
-      ctl_timeout_wait(t+(LOCKOUT_MS*3));
+      }
+      ctl_timeout_wait(t0+(PAUSE_MS*3));
     }
     /*> TODO: EMIT DIAG 0x06D6 <*/
     pframe = (canframe_t*)ctl_memory_area_allocate(&frames);
     if(pframe) {
-      pframe->id = ID_PD16_DIAG;
-      pframe->extended = 0;
-      pframe->dlc = 8;
+      pframe->txhdr.Identifier = ID_PD16_DIAG;
+      pframe->txhdr.IdType = FDCAN_STANDARD_ID;
+      pframe->txhdr.TxFrameType = FDCAN_DATA_FRAME;
+      pframe->txhdr.BitRateSwitch = FDCAN_BRS_OFF;
+      pframe->txhdr.FDFormat = FDCAN_CLASSIC_CAN;
+      pframe->txhdr.DataLength = FDCAN_DLC_BYTES_8;
       pframe->data.as_uint8[0] = 3;     /**< DIAG3          */
       pframe->data.as_uint8[1] = c;     /**< mail rail temp */
       pframe->data.as_uint8[2] = c;     /**< temp 1         */
@@ -2205,33 +2513,43 @@ static __NO_RETURN void
       pframe->data.as_uint8[5] = c;     /**< cpu temp       */
       pframe->data.as_uint8[6] = i>>8;  /**< total I        */
       pframe->data.as_uint8[7] = i;
-      if(!ctl_message_queue_post(&txq, pframe, CTL_TIMEOUT_ABSOLUTE, t+(LOCKOUT_MS*4)))
+      if(!htbus_send(pframe)) {
+        (void)ctl_message_queue_post_nb(&codes, (void*)CODE_PD16A_SENDDIAG3);
         ctl_memory_area_free(&frames, (void*)pframe); /**< _post failed! */
-      ctl_timeout_wait(t+(LOCKOUT_MS*4));
+      }
+      ctl_timeout_wait(t0+(PAUSE_MS*4));
     }
     /*> TODO: EMIT DIAG 0x06D6 <*/
     pframe = (canframe_t*)ctl_memory_area_allocate(&frames);
     if(pframe) {
-      pframe->id = ID_PD16_DIAG;
-      pframe->extended = 0;
-      pframe->dlc = 7;
+      pframe->txhdr.Identifier = ID_PD16_DIAG;
+      pframe->txhdr.IdType = FDCAN_STANDARD_ID;
+      pframe->txhdr.TxFrameType = FDCAN_DATA_FRAME;
+      pframe->txhdr.BitRateSwitch = FDCAN_BRS_OFF;
+      pframe->txhdr.FDFormat = FDCAN_CLASSIC_CAN;
+      pframe->txhdr.DataLength = FDCAN_DLC_BYTES_7;
       pframe->data.as_uint8[0] = 4;           /**< DIAG4         */
       pframe->data.as_uint8[1] = 0;           /**< unspecified   */
       pframe->data.as_uint8[2] = v>>8;        /**< batt v        */
       pframe->data.as_uint8[3] = v;
-      pframe->data.as_uint8[4] = (t/1000)>>8; /**< on time       */
-      pframe->data.as_uint8[5] = (t/1000);
+      pframe->data.as_uint8[4] = (t0/1000)>>8; /**< on time       */
+      pframe->data.as_uint8[5] = (t0/1000);
       pframe->data.as_uint8[6] = 0b01010101;  /**< temp go/no-go */
-      if(!ctl_message_queue_post(&txq, pframe, CTL_TIMEOUT_ABSOLUTE, t+(LOCKOUT_MS*5)))
+      if(!htbus_send(pframe)) {
+        (void)ctl_message_queue_post_nb(&codes, (void*)CODE_PD16A_SENDDIAG4);
         ctl_memory_area_free(&frames, (void*)pframe); /**< _post failed! */
-      ctl_timeout_wait(t+(LOCKOUT_MS*5));
+      }
+      ctl_timeout_wait(t0+(PAUSE_MS*5));
     }
     /*> TODO: EMIT DIAG 0x06D6 <*/
     pframe = (canframe_t*)ctl_memory_area_allocate(&frames);
     if(pframe) {
-      pframe->id = ID_PD16_DIAG;
-      pframe->extended = 0;
-      pframe->dlc = 8;
+      pframe->txhdr.Identifier = ID_PD16_DIAG;
+      pframe->txhdr.IdType = FDCAN_STANDARD_ID;
+      pframe->txhdr.TxFrameType = FDCAN_DATA_FRAME;
+      pframe->txhdr.BitRateSwitch = FDCAN_BRS_OFF;
+      pframe->txhdr.FDFormat = FDCAN_CLASSIC_CAN;
+      pframe->txhdr.DataLength = FDCAN_DLC_BYTES_8;
       pframe->data.as_uint8[0] = 5;     /**< DIAG5       */
       pframe->data.as_uint8[1] = 0;     /**< unspecified */
       pframe->data.as_uint8[2] = 0x00;  /**< sn#1/#2     */
@@ -2240,17 +2558,352 @@ static __NO_RETURN void
       pframe->data.as_uint8[5] = 0x67;  /**< sn#7/#8     */
       pframe->data.as_uint8[6] = 0x53;  /**< sn#9/#10    */
       pframe->data.as_uint8[7] = 0x09;  /**< sn#11/#12   */
-      if(!ctl_message_queue_post(&txq, pframe, CTL_TIMEOUT_ABSOLUTE, t+(LOCKOUT_MS*6)))
+      if(!htbus_send(pframe)) {
+        (void)ctl_message_queue_post_nb(&codes, (void*)CODE_PD16A_SENDDIAG5);
         ctl_memory_area_free(&frames, (void*)pframe); /**< _post failed! */
-      ctl_timeout_wait(t+(LOCKOUT_MS*6));
+      }
+      ctl_timeout_wait(t0+(PAUSE_MS*6));
     }
 
-    assert(ctl_get_current_time() < (t+BASE_MS));
     CTL_EVENT_SET_t const evt =
       ctl_events_wait(CTL_EVENT_WAIT_ANY_EVENTS , &e_pd16a,
                       EVT_PD16_DIAG0 | EVT_PD16_DIAG1 | EVT_PD16_DIAG2 |
                       EVT_PD16_DIAG3 | EVT_PD16_DIAG4,
-                      CTL_TIMEOUT_ABSOLUTE, t+BASE_MS);
+                      CTL_TIMEOUT_ABSOLUTE, t0+BASE_MS);
     (void)evt;  /**< knowing what unblocked us does not matter, time to tx all (for now) */
+  }
+}
+
+///**
+//  * @brief  Initializes the FDCAN3 MSP.
+//  * @param  hfdcan pointer to an FDCAN_HandleTypeDef structure that contains
+//  *         the configuration information for the specified FDCAN.
+//  * @retval None
+//  */
+//void atebus_init(FDCAN_HandleTypeDef *atebus)
+//{
+//  assert(atebus);
+//
+//  ErrorStatus e = ERROR;
+//  LL_GPIO_InitTypeDef pin;
+//  LL_AHB2_GRP1_EnableClock(LL_AHB2_GRP1_PERIPH_GPIOB);
+//
+//  /* PB.3  - FDCAN3_RX (ATEBUS BUS) [AF11] */
+//  LL_GPIO_StructInit(&pin);
+//  pin.Mode      = LL_GPIO_MODE_ALTERNATE;
+//  pin.Alternate = LL_GPIO_AF_9;
+//  pin.Pin       = LL_GPIO_PIN_3;
+//  pin.Pull      = LL_GPIO_PULL_UP;
+//  e = LL_GPIO_Init(GPIOB, &pin);
+//  assert(e == SUCCESS);
+//
+//  /* PB.4  - FDCAN3_TX (ATEBUS BUS) [AF11] */
+//  LL_GPIO_StructInit(&pin);
+//  pin.Mode      = LL_GPIO_MODE_ALTERNATE;
+//  pin.Alternate = LL_GPIO_AF_11;
+//  pin.Pin       = LL_GPIO_PIN_4;
+//  pin.Speed     = LL_GPIO_SPEED_FREQ_VERY_HIGH;
+//  pin.Pull      = LL_GPIO_PULL_NO;
+//  e = LL_GPIO_Init(GPIOB, &pin);
+//  assert(e == SUCCESS);
+//
+//  NVIC_SetPriority(FDCAN3_IT0_IRQn, IRQPRI_FDCAN);
+//  NVIC_EnableIRQ(FDCAN3_IT0_IRQn);
+//  NVIC_SetPriority(FDCAN3_IT1_IRQn, IRQPRI_FDCAN);
+//  NVIC_EnableIRQ(FDCAN3_IT1_IRQn);
+//}
+
+/** ---------------------------------------------------------------------------
+ * @internal
+ */
+static FDCAN_HandleTypeDef htbus = { .Instance = FDCAN2,
+  .Init = {
+    .ClockDivider = FDCAN_CLOCK_DIV1,/**< PDIV := 0000b (/1)         */
+    .FrameFormat = FDCAN_FRAME_CLASSIC,
+    .Mode = FDCAN_MODE_NORMAL,
+    .AutoRetransmission = ENABLE,
+    .TransmitPause = DISABLE,
+    .ProtocolException = ENABLE,
+                                     /*  170MHz/NBRP = 1/34MHz tq    */
+    .NominalPrescaler = 5,           /*  NBRP   := /5                */
+    .NominalSyncJumpWidth = 8,       /*  NSJW   := 8                 */
+    .NominalTimeSeg1 = 23,           /*  NTSEG1 := 23                */
+    .NominalTimeSeg2 = 10,           /*  NTSEG2 := 10                */
+                                     /* [1+23+10]tq = 1MBit(+/-8tq)  */
+
+                                     /*  170MHz/DBRP = 1/170MHz tq   */
+    .DataPrescaler = 1,              /*  DBRP   := /1                */
+    .DataSyncJumpWidth = 8,          /*  DSJW   := 8                 */
+    .DataTimeSeg1 = 11,              /*  DTSEG1 := 11                */
+    .DataTimeSeg2 = 9,               /*  DTSEG2 := 9                 */
+                                     /* [1+11+9]tq = 8.1MBit(+/-8tq) */
+                                     /* 123.5ns bit time ~1.2% error */
+    .StdFiltersNbr = 28,
+    .ExtFiltersNbr = 0,
+    .TxFifoQueueMode = FDCAN_TX_FIFO_OPERATION
+  }
+};
+
+/** ---------------------------------------------------------------------------
+ * @internal
+ */
+void FDCAN2_IT1_IRQHandler(void) {
+  ctl_enter_isr();
+  HAL_FDCAN_IRQHandler(&htbus);
+  ctl_exit_isr();
+}
+void FDCAN2_IT0_IRQHandler(void) {
+  ctl_enter_isr();
+  HAL_FDCAN_IRQHandler(&htbus);
+  ctl_exit_isr();
+}
+
+/** ---------------------------------------------------------------------------
+ * @internal - called from IRQ context
+ */
+void htbus_TxEventFifoCallback(FDCAN_HandleTypeDef *htbus, uint32_t TxEventFifoITs)
+{
+  (void)ctl_message_queue_post_nb(&codes, (void*)CODE_TXEFIFO);
+}
+
+/** ---------------------------------------------------------------------------
+ * @internal - called from IRQ context
+ */
+void htbus_RxFifo0Callback(FDCAN_HandleTypeDef *hnd, uint32_t RxFifo0ITs)
+{
+  assert(hnd == &htbus);
+
+  /* drain hardware fifo into rxq */
+  if((RxFifo0ITs & FDCAN_IT_RX_FIFO0_NEW_MESSAGE) || (RxFifo0ITs & FDCAN_IT_RX_FIFO0_FULL)) {
+    uint32_t level = HAL_FDCAN_GetRxFifoFillLevel(hnd, FDCAN_RX_FIFO0); assert(level <= 3);
+    while(level--) {
+      canframe_t * const pframe = (canframe_t*)ctl_memory_area_allocate(&frames);
+      if(!pframe) {
+        (void)ctl_message_queue_post_nb(&codes, (void*)CODE_RXFIFO0_ALLOC);
+        break;
+      }
+      if(HAL_FDCAN_GetRxMessage(hnd, FDCAN_RX_FIFO0, &(pframe->rxhdr), &(pframe->data.as_uint8[0])) != HAL_OK) {
+        (void)ctl_message_queue_post_nb(&codes, (void*)CODE_RXFIFO0);
+        ctl_memory_area_free(&frames, (unsigned*)pframe); /**< avoid leak! */
+        break;
+      }
+      if(!ctl_message_queue_post_nb(&rxq, (void*)pframe)) {
+        (void)ctl_message_queue_post_nb(&codes, (void*)CODE_RXQFULL);
+        ctl_memory_area_free(&frames, (unsigned*)pframe); /**< avoid leak! */
+        break;
+      }
+    }
+  }
+
+  if(RxFifo0ITs & FDCAN_IT_RX_FIFO0_MESSAGE_LOST) {
+    /* signal: likely to occur only when we're debugging and the FDCAN  */
+    /* peripheral continues to work away in the background - should not */
+    /* happen in the day-to-day, but want to catch regardless           */
+    (void)ctl_message_queue_post_nb(&codes, (void*)CODE_FRAMELOST);
+  }
+}
+
+/** ---------------------------------------------------------------------------
+ * @internal - called from IRQ context
+ */
+void htbus_RxFifo1Callback(FDCAN_HandleTypeDef *htbus, uint32_t RxFifo1ITs)
+{
+  /* maybe assign/filter for future keypads/canopen-stack? */
+  (void)ctl_message_queue_post_nb(&codes, (void*)CODE_RXFIFO1);
+}
+
+/** ---------------------------------------------------------------------------
+ * @internal - called from IRQ context
+ */
+void htbus_TxBufferCompleteCallback(FDCAN_HandleTypeDef *htbus, uint32_t BufferIndexes)
+{
+  unsigned level = HAL_FDCAN_GetTxFifoFreeLevel(htbus);
+  while(level--) {    /**< always top off FIFO */
+    canframe_t *pframe = 0;
+    if(ctl_message_queue_receive_nb(&txq, (void**)&pframe)) {
+      assert(pframe);
+      if(HAL_FDCAN_AddMessageToTxFifoQ(htbus, &(pframe->txhdr), &(pframe->data.as_uint8[0])) != HAL_OK)
+        (void)ctl_message_queue_post_nb(&codes, (void*)CODE_TXFIFO);
+      ctl_memory_area_free(&frames, (unsigned*)pframe); /**< avoid leak! */
+    }
+    else break; /* maybe that was the last thing in the queue ¯\_(ツ)_/¯ */
+  }
+  ctl_events_pulse(&e, EVT_HTBUS_TXQWD);
+}
+
+/** ---------------------------------------------------------------------------
+ * @internal - called from IRQ context
+ */
+void htbus_TxBufferAbortCallback(FDCAN_HandleTypeDef *htbus, uint32_t BufferIndexes)
+{
+  (void)ctl_message_queue_post_nb(&codes, (void*)CODE_TXBUF_ABT);
+}
+
+/** ---------------------------------------------------------------------------
+ * @internal - called from IRQ context
+ */
+void htbus_ErrorStatusCallback(FDCAN_HandleTypeDef *htbus, uint32_t ErrorStatusITs)
+{
+  if(ErrorStatusITs & FDCAN_IT_ERROR_PASSIVE)
+    (void)ctl_message_queue_post_nb(&codes, (void*)CODE_ERR_PASSIVE);
+
+  if(ErrorStatusITs & FDCAN_IT_ERROR_WARNING)
+    (void)ctl_message_queue_post_nb(&codes, (void*)CODE_ERR_WARNING);
+
+  if(ErrorStatusITs & FDCAN_IT_BUS_OFF)
+    (void)ctl_message_queue_post_nb(&codes, (void*)CODE_BUS_OFF);
+}
+
+/** ---------------------------------------------------------------------------
+ * @internal
+ * @brief place (or queue) a canframe on the htbus - NONBLOCKING
+ * @retval non-zero upon success
+ *
+ * @note on success, it's implied that the caller gives up ownership of the frame
+ */
+unsigned htbus_send(canframe_t *pframe)
+{
+  assert(pframe);
+  assert(pframe->txhdr.FDFormat == FDCAN_FRAME_CLASSIC);
+  assert(pframe->txhdr.IdType == FDCAN_STANDARD_ID);
+  assert(pframe->txhdr.DataLength <= FDCAN_DLC_BYTES_8);
+
+  HAL_StatusTypeDef const status =
+    HAL_FDCAN_AddMessageToTxFifoQ(&htbus, &(pframe->txhdr), &(pframe->data.as_uint8[0]));
+
+  if(status == HAL_OK) {                                  /**< made it into hardware FIFO */
+    ctl_memory_area_free(&frames, (unsigned*)pframe);     /**< return frame to pool       */
+    return ~0;
+  }
+
+  unsigned const err = HAL_FDCAN_GetError(&htbus);
+  if(err & HAL_FDCAN_ERROR_FIFO_FULL)
+    if(ctl_message_queue_post_nb(&txq, pframe)) {         /**< made it into queue         */
+      return ~0;
+    }
+
+  (void)ctl_message_queue_post_nb(&codes, (void*)CODE_TXQFULL);
+  /* queue full - this is a pretty exceptional situation,               */
+  /* it's possible to be real, or maybe there is a problem on the bus   */
+  /*                                                                    */
+  /* I think the right thing to do is depend on a watchdog task that is */
+  /* periodically tripped to check the state of the txq and if it's     */
+  /* full, but a TxBufferCompleteCallback hasn't occured in a while     */
+  /* then flush the txq and lets let things attempt to heal themselves  */
+  return 0;
+}
+
+/**
+  * @brief  Initializes the FDCAN2 bus.
+  * @param  htbus pointer to an FDCAN_HandleTypeDef structure that contains
+  *         the configuration information for the specified FDCAN.
+  * @retval None
+  */
+void htbus_init(FDCAN_HandleTypeDef *htbus)
+{
+  assert(htbus);
+  ErrorStatus e = ERROR;
+  LL_GPIO_InitTypeDef pin;
+  LL_AHB2_GRP1_EnableClock(LL_AHB2_GRP1_PERIPH_GPIOB);
+
+  /* PB.5  - FDCAN2_RX (HALTECH BUS) [AF9] */
+  LL_GPIO_StructInit(&pin);
+  pin.Mode      = LL_GPIO_MODE_ALTERNATE;
+  pin.Alternate = LL_GPIO_AF_9;
+  pin.Pin       = LL_GPIO_PIN_5;
+  pin.Pull      = LL_GPIO_PULL_UP;
+  e = LL_GPIO_Init(GPIOB, &pin);
+  assert(e == SUCCESS);
+
+  /* PB.6  - FDCAN2_TX (HALTECH BUS) [AF9] */
+  LL_GPIO_StructInit(&pin);
+  pin.Mode      = LL_GPIO_MODE_ALTERNATE;
+  pin.Alternate = LL_GPIO_AF_9;
+  pin.Pin       = LL_GPIO_PIN_6;
+  pin.Speed     = LL_GPIO_SPEED_FREQ_VERY_HIGH;
+  pin.Pull      = LL_GPIO_PULL_NO;
+  e = LL_GPIO_Init(GPIOB, &pin);
+  assert(e == SUCCESS);
+
+  NVIC_SetPriority(FDCAN2_IT0_IRQn, IRQPRI_FDCAN);
+  NVIC_EnableIRQ(FDCAN2_IT0_IRQn);
+//NVIC_SetPriority(FDCAN2_IT1_IRQn, IRQPRI_FDCAN);
+//NVIC_EnableIRQ(FDCAN2_IT1_IRQn);
+}
+
+/** ---------------------------------------------------------------------------
+ * @internal
+ * @brief handles everything fdcan (queues/errors/irqs/etc)
+ *
+ * @note Basically, the FDCAN HAL_xxxx api is not threadsafe, so EVERYTHING
+ *       needs to be done from thread context (for mutexes to properly guard
+ *       the underlying hardware state too). Even running the IRQ handler needs
+ *       to be done here.
+ *
+ *       The only thing the IRQ is used for is to kickoff this thread.
+ */
+static __NO_RETURN void
+  task_htbus(void *arg)
+{
+  CTL_TIME_t const to = (CTL_TIME_t)arg; assert(to >= 500);
+  HAL_StatusTypeDef result;
+  HAL_FDCAN_StateTypeDef state;
+
+  __HAL_FDCAN_RESET_HANDLE_STATE(&htbus);
+  result = HAL_FDCAN_RegisterCallback(&htbus, HAL_FDCAN_MSPINIT_CB_ID, htbus_init);            assert(result == HAL_OK);
+  result = HAL_FDCAN_Init(&htbus);                                                             assert(result == HAL_OK);
+  state  = HAL_FDCAN_GetState(&htbus);                                                         assert(state  == HAL_FDCAN_STATE_READY);
+  result = HAL_FDCAN_RegisterTxEventFifoCallback(&htbus, htbus_TxEventFifoCallback);           assert(result == HAL_OK);
+  result = HAL_FDCAN_RegisterRxFifo0Callback(&htbus, htbus_RxFifo0Callback);                   assert(result == HAL_OK);
+  result = HAL_FDCAN_RegisterRxFifo1Callback(&htbus, htbus_RxFifo1Callback);                   assert(result == HAL_OK);
+  result = HAL_FDCAN_RegisterErrorStatusCallback(&htbus, htbus_ErrorStatusCallback);           assert(result == HAL_OK);
+  result = HAL_FDCAN_RegisterTxBufferAbortCallback(&htbus, htbus_TxBufferAbortCallback);       assert(result == HAL_OK);
+  result = HAL_FDCAN_RegisterTxBufferCompleteCallback(&htbus, htbus_TxBufferCompleteCallback); assert(result == HAL_OK);
+  result = HAL_FDCAN_EnableEdgeFiltering(&htbus);                                              assert(result == HAL_OK);
+
+  result = HAL_FDCAN_ConfigGlobalFilter(&htbus, FDCAN_ACCEPT_IN_RX_FIFO0, FDCAN_REJECT, FDCAN_REJECT_REMOTE, FDCAN_REJECT_REMOTE);
+  assert(result == HAL_OK); /* FUTURE: tighten up filters once arch is worked out */
+
+  result = HAL_FDCAN_ConfigInterruptLines(&htbus,
+    FDCAN_IT_GROUP_RX_FIFO0 | FDCAN_IT_GROUP_RX_FIFO1 | FDCAN_IT_GROUP_SMSG | FDCAN_IT_GROUP_TX_FIFO_ERROR |
+    FDCAN_IT_GROUP_MISC | FDCAN_IT_GROUP_BIT_LINE_ERROR | FDCAN_IT_GROUP_PROTOCOL_ERROR, FDCAN_INTERRUPT_LINE0);
+  assert(result == HAL_OK); /* FUTURE: narrow this down once arch is worked out */
+
+  result = HAL_FDCAN_ActivateNotification(&htbus,
+    FDCAN_IT_TX_COMPLETE | FDCAN_IT_TX_ABORT_COMPLETE | FDCAN_IT_TX_FIFO_EMPTY | FDCAN_IT_RX_HIGH_PRIORITY_MSG |
+    FDCAN_IT_TIMESTAMP_WRAPAROUND | FDCAN_IT_TIMEOUT_OCCURRED | FDCAN_IT_TX_EVT_FIFO_ELT_LOST | FDCAN_IT_TX_EVT_FIFO_FULL |
+    FDCAN_IT_TX_EVT_FIFO_NEW_DATA | FDCAN_IT_RX_FIFO0_MESSAGE_LOST | FDCAN_IT_RX_FIFO0_FULL | FDCAN_IT_RX_FIFO0_NEW_MESSAGE |
+    FDCAN_IT_RX_FIFO1_MESSAGE_LOST | FDCAN_IT_RX_FIFO1_FULL | FDCAN_IT_RX_FIFO1_NEW_MESSAGE | FDCAN_IT_RAM_ACCESS_FAILURE |
+    FDCAN_IT_ERROR_LOGGING_OVERFLOW | FDCAN_IT_RAM_WATCHDOG | FDCAN_IT_ARB_PROTOCOL_ERROR | FDCAN_IT_DATA_PROTOCOL_ERROR |
+    FDCAN_IT_RESERVED_ADDRESS_ACCESS | FDCAN_IT_ERROR_PASSIVE | FDCAN_IT_ERROR_WARNING | FDCAN_IT_BUS_OFF,
+    FDCAN_TX_BUFFER0 | FDCAN_TX_BUFFER1 | FDCAN_TX_BUFFER2);
+  assert(result == HAL_OK); /* FUTURE: narrow this down once arch is worked out */
+
+  ctl_message_queue_setup_events(&rxq, &e, EVT_HTBUS_RXQ_NOTEMPTY, EVT_NONE);
+  result = HAL_FDCAN_Start(&htbus); assert(result == HAL_OK);
+  while(~0) {
+    unsigned const evt =
+      ctl_events_wait(CTL_EVENT_WAIT_ANY_EVENTS, &e, EVT_HTBUS_RXQ_NOTEMPTY | EVT_HTBUS_TXQWD, CTL_TIMEOUT_DELAY, to);
+
+    if(evt & EVT_HTBUS_RXQ_NOTEMPTY) {
+      canframe_t * pframe;
+      while(ctl_message_queue_receive_nb(&rxq, (void**)&pframe)) {
+        assert(pframe);
+        filter(pframe);
+        ctl_memory_area_free(&frames, (unsigned*)pframe);
+      }
+    }
+
+    if(evt == EVT_NONE) {                                               /**< timeout?                 */
+      (void)ctl_message_queue_post_nb(&codes, (void*)CODE_TXTIMEOUT);   /* assume the worst and flush */
+      if(HAL_FDCAN_Stop(&htbus) == HAL_OK) {
+        canframe_t * pframe;
+        while(ctl_message_queue_receive_nb(&txq, (void**)&pframe)) {
+          assert(pframe);
+          ctl_memory_area_free(&frames, (unsigned*)pframe);
+        }
+        (void)HAL_FDCAN_Start(&htbus);
+      }
+    }
   }
 }

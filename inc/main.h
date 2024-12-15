@@ -14,13 +14,18 @@ extern "C"
 #endif
 
 enum _taskpri_t {                /*!  global task priorities                      */
-  TASKPRI_HIGHEST  = 255,        /**< reserved for main() during startup          */
+  TASKPRI_HIGHEST = 255,         /**< reserved for main() during startup          */
+  /* ... */
+  TASKPRI_HTBUS   = 200,
+  TASKPRI_ATEBUS  = 199,
   /* ... */
   TASKPRI_PD16OUT = 129,
   TASKPRI_IOEOUT  = 128,
   /* ... */
+  TASKPRI_TEST     = 3,
   TASKPRI_STATUS   = 2,          /**< periodic IOE/PD16 status msg generation     */
-  TASKPRI_BUTTON   = 1,          /**< button debounce tasks                       */
+  TASKPRI_BUTLED   = 1,          /**< button debounce and led chirp tasks         */
+  TASKPRI_IDLE     = 0,
   TASKPRI_LOWEST   = 0           /**< reserved for main() post startup (idle)     */
 };
 
@@ -36,7 +41,7 @@ enum {
   IRQPRI_7       = 7,              /**<         !OUTSIDE OF CTL VISIBILITY!         */
 
   IRQPRI_SYSTICK = 8,              /**< highest usable priority within rtos context */
-  IRQPRI_9       = 9,
+  IRQPRI_FDCAN   = 9,
   IRQPRI_10      = 10,
   IRQPRI_11      = 11,
   IRQPRI_12      = 12,

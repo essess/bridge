@@ -12,6 +12,7 @@
   <configuration
     Name="Debug"
     c_preprocessor_definitions="DEBUG"
+    debug_entry_point_symbol="reset_handler"
     debug_startup_completion_point="main"
     debug_threads_max="50"
     gcc_debugging_level="Level 3"
@@ -46,7 +47,6 @@
       c_preprocessor_definitions="STM32G474xx;__VECTORS=&quot;STM32G474xx.vec&quot;;__SYSTEM_STM32G4XX;__TARGET_PROCESSOR_STM32G474CE;__THUMB;USE_FULL_LL_DRIVER"
       c_user_include_directories="$(ProjectDir)/inc;$(ProjectDir)/stm32g4xx_hal_driver-1.2.3/Inc"
       compilation_database_file="$(IntDir)/$(ProjectName).json"
-      debug_entry_point_symbol="reset_handler"
       debug_register_definition_file="$(ProjectDir)/sys/STM32G474_Peripherals.xml"
       debug_threads_script="$(PackagesDir)/libraries/libctl/source/threads.js"
       gcc_c_language_standard="gnu17"
@@ -56,12 +56,6 @@
       gcc_unused_variable_warning="Yes"
       libctl="Yes"
       linker_memory_map_file="$(ProjectDir)/sys/STM32G474CE_MemoryMap.xml"
-      linker_printf_fmt_level="int"
-      linker_printf_fp_enabled="No"
-      linker_printf_width_precision_supported="No"
-      linker_scanf_character_group_matching_enabled="No"
-      linker_scanf_fmt_level="int"
-      linker_scanf_fp_enabled="No"
       linker_section_placement_file="$(ProjectDir)/sys/flash_placement.xml"
       macros="DeviceVectorsFile=STM32G474xx.vec;Family=STM32;Target=STM32G474CE;Placement=Flash"
       project_type="Executable"
@@ -86,11 +80,13 @@
       <file file_name="inc/main.h" />
     </folder>
     <folder Name="src">
-      <file file_name="src/can.c" />
       <file file_name="src/main.c" />
     </folder>
     <folder Name="stm32g4xx_hal_driver-1.2.3">
       <folder Name="Inc">
+        <file file_name="stm32g4xx_hal_driver-1.2.3/Inc/stm32g4xx_hal_conf.h" />
+        <file file_name="stm32g4xx_hal_driver-1.2.3/Inc/stm32g4xx_hal_def.h" />
+        <file file_name="stm32g4xx_hal_driver-1.2.3/Inc/stm32g4xx_hal_fdcan.h" />
         <file file_name="stm32g4xx_hal_driver-1.2.3/Inc/stm32g4xx_ll_bus.h" />
         <file file_name="stm32g4xx_hal_driver-1.2.3/Inc/stm32g4xx_ll_exti.h" />
         <file file_name="stm32g4xx_hal_driver-1.2.3/Inc/stm32g4xx_ll_gpio.h" />
@@ -100,6 +96,7 @@
         <file file_name="stm32g4xx_hal_driver-1.2.3/Inc/stm32g4xx_ll_utils.h" />
       </folder>
       <folder Name="Src">
+        <file file_name="stm32g4xx_hal_driver-1.2.3/Src/stm32g4xx_hal_fdcan.c" />
         <file file_name="stm32g4xx_hal_driver-1.2.3/Src/stm32g4xx_ll_exti.c" />
         <file file_name="stm32g4xx_hal_driver-1.2.3/Src/stm32g4xx_ll_gpio.c" />
         <file file_name="stm32g4xx_hal_driver-1.2.3/Src/stm32g4xx_ll_rcc.c" />
